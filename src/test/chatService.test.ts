@@ -149,6 +149,25 @@ suite('ChatService', () => {
 		assert.strictEqual(service.messages.length, count);
 	});
 
+	test('stays connected until the last viewer is released', async () => {
+		simulation = { enabled: true, messagesPerSecond: 0 };
+		service.refreshConfig();
+		const states = () => service.sources.map((info) => info.status.state);
+		const first = service.acquire();
+		const second = service.acquire();
+		await waitFor(() => states().includes('connected'), 'simulated sources to connect');
+
+		first.dispose();
+		first.dispose(); // Releasing twice must not release the other viewer.
+		assert.ok(states().includes('connected'), 'still running for the second viewer');
+
+		second.dispose();
+		assert.ok(!states().includes('connected'), 'disconnected once nobody is viewing');
+
+		service.acquire().dispose();
+		assert.ok(!states().includes('connected'));
+	});
+
 	test('drops removed messages from history so they cannot be shown again', () => {
 		maxMessages = 10;
 		emit({ type: 'message', message: message('a', 'u1') });

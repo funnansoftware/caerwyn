@@ -17,10 +17,33 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "caerwyn",
+          "title": "Caerwyn",
+          "icon": "media/caerwyn.svg"
+        }
+      ]
+    },
+    "views": {
+      "caerwyn": [
+        {
+          "type": "webview",
+          "id": "caerwyn.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "caerwyn.openChat",
         "title": "Open Chat",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.openChatSidebar",
+        "title": "Open Chat in Sidebar",
         "category": "Caerwyn"
       },
       {
@@ -98,6 +121,28 @@
           "command": "caerwyn.simulateEvent",
           "when": "activeWebviewPanelId == 'caerwyn.chat' && config.caerwyn.simulation.enabled",
           "group": "navigation@0"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "caerwyn.simulateEvent",
+          "when": "view == caerwyn.chatView && config.caerwyn.simulation.enabled",
+          "group": "navigation@0"
+        },
+        {
+          "command": "caerwyn.clearChat",
+          "when": "view == caerwyn.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "caerwyn.reconnect",
+          "when": "view == caerwyn.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "caerwyn.openChat",
+          "when": "view == caerwyn.chatView",
+          "group": "1_open@0"
         }
       ]
     },

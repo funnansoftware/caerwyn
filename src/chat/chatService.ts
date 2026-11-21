@@ -50,7 +50,7 @@ const FLUSH_MS = 50;
 
 /**
  * Owns the list of chat sources, the connections that read them, and a capped buffer of recent
- * messages. Connections only run between `start()` and `stop()`, that is while the chat tab is open.
+ * messages. Connections only run between `start()` and `stop()`, that is while a chat view (see `acquire()`) is open.
  */
 export class ChatService {
 	private readonly eventsEmitter = new Emitter<ChatEvent[]>();
@@ -69,6 +69,7 @@ export class ChatService {
 	private flushTimer: NodeJS.Timeout | undefined;
 	private readonly rebuildTimers = new Map<Platform, NodeJS.Timeout>();
 	private running = false;
+	private viewers = 0;
 	private twitch: TwitchChat | undefined;
 	private readonly youtube = new Map<string, YouTubeChat>();
 	private simulating: boolean;
@@ -109,6 +110,27 @@ export class ChatService {
 			label: this.labels.get(source.id) ?? defaultLabel(source),
 			status: this.statuses.get(source.id) ?? { state: 'idle' },
 		}));
+	}
+
+	/**
+	 * Registers a viewer (the chat tab, the sidebar view). Chat is read while at least one viewer is held,
+	 * and the returned handle releases it; the last release disconnects.
+	 */
+	acquire(): Disposable {
+		this.viewers++;
+		this.start();
+		let released = false;
+		return {
+			dispose: () => {
+				if (released) {
+					return;
+				}
+				released = true;
+				if (--this.viewers === 0) {
+					this.stop();
+				}
+			},
+		};
 	}
 
 	start(): void {

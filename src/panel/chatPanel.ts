@@ -1,27 +1,15 @@
-import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/chatService';
-import { SourceInfo } from '../chat/types';
-import { HostMessage, VIEW_ACTIONS, ViewAction, ViewSettings, WebviewMessage } from './protocol';
+import { ChatWebview, chatWebviewOptions } from './chatWebview';
 
 export const CHAT_VIEW_TYPE = 'caerwyn.chat';
 
-function viewSettings(): ViewSettings {
-	const config = vscode.workspace.getConfiguration('caerwyn');
-	return {
-		maxMessages: config.get<number>('maxMessages', 500),
-		showTimestamps: config.get<boolean>('showTimestamps', false),
-	};
-}
-
 /**
  * The chat tab: a webview panel in the editor area, so it can be split, moved and saved in layouts
- * like any other editor. The webview only renders; connections and message history live in `ChatService`.
+ * like any other editor.
  */
 export class ChatPanel {
 	private static current: ChatPanel | undefined;
-	/** How many times a chat webview has loaded its script and asked for state. Lets tests see the webview run. */
-	static readyCount = 0;
 
 	static get isOpen(): boolean {
 		return ChatPanel.current !== undefined;
@@ -32,12 +20,7 @@ export class ChatPanel {
 			ChatPanel.current.panel.reveal();
 			return;
 		}
-		const panel = vscode.window.createWebviewPanel(
-			CHAT_VIEW_TYPE,
-			'Caerwyn Chat',
-			vscode.ViewColumn.Active,
-			ChatPanel.webviewOptions(context),
-		);
+		const panel = vscode.window.createWebviewPanel(CHAT_VIEW_TYPE, 'Caerwyn Chat', vscode.ViewColumn.Active, chatWebviewOptions(context));
 		ChatPanel.current = new ChatPanel(panel, context, service);
 	}
 
@@ -47,96 +30,27 @@ export class ChatPanel {
 			panel.dispose();
 			return;
 		}
-		panel.webview.options = ChatPanel.webviewOptions(context);
+		panel.webview.options = chatWebviewOptions(context);
 		ChatPanel.current = new ChatPanel(panel, context, service);
 	}
 
-	private static webviewOptions(context: vscode.ExtensionContext): vscode.WebviewOptions {
-		return { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')] };
-	}
-
-	private readonly disposables: vscode.Disposable[] = [];
+	private readonly chat: ChatWebview;
+	private readonly disposable: vscode.Disposable;
 
 	private constructor(
 		private readonly panel: vscode.WebviewPanel,
 		context: vscode.ExtensionContext,
-		private readonly service: ChatService,
+		service: ChatService,
 	) {
-		panel.webview.html = this.html(context);
-		this.disposables.push(
-			panel.webview.onDidReceiveMessage((message: WebviewMessage) => this.onMessage(message)),
-			service.onEvents((events) => this.post({ type: 'events', events })),
-			service.onSources((sources) => {
-				this.updateTitle(sources);
-				this.post({ type: 'sources', sources });
-			}),
-			service.onReset(() => this.post({ type: 'reset' })),
-			vscode.workspace.onDidChangeConfiguration((event) => {
-				if (event.affectsConfiguration('caerwyn')) {
-					this.post({ type: 'settings', settings: viewSettings() });
-				}
-			}),
-			panel.onDidDispose(() => this.dispose()),
-		);
-		service.start();
-		this.updateTitle(service.sources);
-	}
-
-	/** This tab may be on stream, so simulated chat is labelled where it cannot be missed. */
-	private updateTitle(sources: SourceInfo[]): void {
-		const simulated = sources.some((info) => info.source.kind === 'simulated');
-		this.panel.title = simulated ? 'Caerwyn Chat (Simulated)' : 'Caerwyn Chat';
-	}
-
-	private onMessage(message: WebviewMessage): void {
-		// The webview is hidden and rebuilt as its tab is switched; it asks for the current state each time.
-		if (message?.type === 'ready') {
-			ChatPanel.readyCount++;
-			this.post({ type: 'init', messages: this.service.messages, sources: this.service.sources, settings: viewSettings() });
-		} else if (message?.type === 'action' && VIEW_ACTIONS.includes(message.action as ViewAction)) {
-			void vscode.commands.executeCommand(`caerwyn.${message.action}`);
-		}
-	}
-
-	private post(message: HostMessage): void {
-		void this.panel.webview.postMessage(message);
+		this.chat = new ChatWebview(panel.webview, context, service, (simulated) => {
+			panel.title = simulated ? 'Caerwyn Chat (Simulated)' : 'Caerwyn Chat';
+		});
+		this.disposable = panel.onDidDispose(() => this.dispose());
 	}
 
 	private dispose(): void {
 		ChatPanel.current = undefined;
-		// Stop listening first: stopping the service reports status changes, and the webview is already gone.
-		for (const disposable of this.disposables) {
-			disposable.dispose();
-		}
-		this.service.stop();
-	}
-
-	private html(context: vscode.ExtensionContext): string {
-		const webview = this.panel.webview;
-		const dist = vscode.Uri.joinPath(context.extensionUri, 'dist');
-		const script = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.js'));
-		const style = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.css'));
-		const nonce = randomBytes(16).toString('base64');
-		// Chat text is untrusted: no inline scripts, and images only from Twitch's emote CDN.
-		const csp = [
-			`default-src 'none'`,
-			`img-src https://static-cdn.jtvnw.net`,
-			`style-src ${webview.cspSource}`,
-			`script-src 'nonce-${nonce}'`,
-		].join('; ');
-		return `<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8">
-	<meta http-equiv="Content-Security-Policy" content="${csp}">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<link rel="stylesheet" href="${style}">
-	<title>Caerwyn Chat</title>
-</head>
-<body>
-	<div id="root"></div>
-	<script nonce="${nonce}" src="${script}"></script>
-</body>
-</html>`;
+		this.chat.dispose();
+		this.disposable.dispose();
 	}
 }

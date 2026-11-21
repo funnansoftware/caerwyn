@@ -9,6 +9,8 @@ import { Account, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, yo
 import { parseVideoId } from './chat/youtube/videoId';
 import { YouTubeTransport } from './chat/youtube/youtubeChat';
 import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
+import { CHAT_SIDEBAR_VIEW_ID, ChatSidebar } from './panel/chatSidebar';
+import { ChatWebview } from './panel/chatWebview';
 
 // Read-only scopes. Sending and moderating will need broader ones, and signing in again.
 const TWITCH_SCOPES = ['user:read:chat'];
@@ -101,11 +103,22 @@ export function activate(context: vscode.ExtensionContext) {
 		log,
 	});
 
+	const sidebar = new ChatSidebar(context, service);
+
 	const openChat = () => ChatPanel.show(context, service);
+	const openSidebar = () => sidebar.reveal();
+	/** Shows the chat wherever the user already has it: the tab, else the visible sidebar, else a new tab. */
+	const showChat = () => {
+		if (!ChatPanel.isOpen && sidebar.isVisible) {
+			void sidebar.reveal();
+		} else {
+			openChat();
+		}
+	};
 
 	const addSource = async (source: RealSource) => {
 		await service.addSource(source);
-		openChat();
+		showChat();
 	};
 
 	const signInAndShow = async (platform: SignInPlatform, own: RealSource) => {
@@ -166,7 +179,7 @@ export function activate(context: vscode.ExtensionContext) {
 		await vscode.workspace.getConfiguration('caerwyn').update('simulation.enabled', enabled, vscode.ConfigurationTarget.Global);
 		service.refreshConfig();
 		if (enabled) {
-			openChat();
+			showChat();
 		}
 	};
 
@@ -185,7 +198,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!service.isSimulating) {
 			await setSimulation(true);
 		}
-		openChat();
+		showChat();
 		service.simulate(kind);
 	};
 
@@ -193,6 +206,8 @@ export function activate(context: vscode.ExtensionContext) {
 		output,
 		{ dispose: () => service.dispose() },
 		vscode.commands.registerCommand('caerwyn.openChat', openChat),
+		vscode.commands.registerCommand('caerwyn.openChatSidebar', openSidebar),
+		vscode.window.registerWebviewViewProvider(CHAT_SIDEBAR_VIEW_ID, sidebar),
 		vscode.commands.registerCommand('caerwyn.signInTwitch', () => signInAndShow(twitch, TWITCH_SELF)),
 		vscode.commands.registerCommand('caerwyn.signOutTwitch', () => signOut(twitch)),
 		vscode.commands.registerCommand('caerwyn.signInYouTube', () => signInAndShow(youtube, YOUTUBE_SELF)),
@@ -219,7 +234,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// Exposed for the extension tests, which cannot otherwise see inside the webview.
-	return { chatViewReadyCount: () => ChatPanel.readyCount };
+	return { chatViewReadyCount: () => ChatWebview.readyCount };
 }
 
 export function deactivate() {}

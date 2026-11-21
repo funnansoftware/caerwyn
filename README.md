@@ -37,6 +37,7 @@ After signing in, the chat tab opens and shows your own channel (Twitch) or your
 | Command | What it does |
 | --- | --- |
 | Caerwyn: Open Chat | Opens or reveals the chat tab. |
+| Caerwyn: Open Chat in Sidebar | Opens the Caerwyn view in the sidebar. |
 | Caerwyn: Sign In to Twitch / YouTube | Signs in and adds your own chat. |
 | Caerwyn: Sign Out of Twitch / YouTube | Signs out, optionally forgetting the app credentials. |
 | Caerwyn: Add Twitch Channel… | Adds another channel's chat by name. |
@@ -45,7 +46,9 @@ After signing in, the chat tab opens and shows your own channel (Twitch) or your
 | Caerwyn: Reconnect | Reconnects every chat. |
 | Caerwyn: Clear Chat | Empties the tab. |
 
-Chat is only read while the chat tab is open. Closing the tab disconnects.
+The chat also lives in the **Caerwyn** view in the activity bar. The tab and the sidebar view show the same chat, and you can use either or both. Drag the view to the secondary sidebar or the bottom panel if you prefer it there.
+
+Chat is only read while the chat tab or the sidebar view is open. Closing the last one disconnects.
 
 ### Settings
 

@@ -49,6 +49,23 @@ suite('Extension', () => {
 		await waitFor(() => tabs().length === 0, 'the chat tab to close');
 	});
 
+	test('opens the chat in the sidebar and shares it with the tab', async () => {
+		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as { chatViewReadyCount(): number };
+		const before = api.chatViewReadyCount();
+		await vscode.commands.executeCommand('caerwyn.openChatSidebar');
+		await waitFor(() => api.chatViewReadyCount() > before, 'the sidebar webview to report ready', 15000);
+		assert.strictEqual(chatTabs().length, 0, 'the sidebar does not open a tab');
+
+		// The tab opens alongside it, and closing it leaves the sidebar view in place.
+		const withSidebar = api.chatViewReadyCount();
+		await vscode.commands.executeCommand('caerwyn.openChat');
+		await waitFor(() => chatTabs().length === 1, 'the chat tab');
+		await waitFor(() => api.chatViewReadyCount() > withSidebar, 'the tab webview to report ready', 15000);
+		await vscode.window.tabGroups.close(chatTabs());
+		await waitFor(() => chatTabs().length === 0, 'the chat tab to close');
+		await vscode.commands.executeCommand('workbench.action.closeSidebar');
+	});
+
 	test('simulating an event switches simulation on, opens the tab and marks it as simulated', async () => {
 		const enabled = () => vscode.workspace.getConfiguration('caerwyn').get<boolean>('simulation.enabled');
 		assert.strictEqual(enabled(), false);
