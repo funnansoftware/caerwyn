@@ -19,11 +19,102 @@
   "contributes": {
     "commands": [
       {
-        "command": "caerwyn.helloWorld",
-        "title": "Hello World",
+        "command": "caerwyn.openChat",
+        "title": "Open Chat",
         "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.signInTwitch",
+        "title": "Sign In to Twitch",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.signOutTwitch",
+        "title": "Sign Out of Twitch",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.signInYouTube",
+        "title": "Sign In to YouTube",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.signOutYouTube",
+        "title": "Sign Out of YouTube",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.addTwitchChannel",
+        "title": "Add Twitch Channel…",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.addYouTubeStream",
+        "title": "Add YouTube Stream…",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.removeSource",
+        "title": "Remove Chat Source…",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.reconnect",
+        "title": "Reconnect",
+        "category": "Caerwyn",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "caerwyn.clearChat",
+        "title": "Clear Chat",
+        "category": "Caerwyn",
+        "icon": "$(clear-all)"
       }
-    ]
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "caerwyn.clearChat",
+          "when": "activeWebviewPanelId == caerwyn.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "caerwyn.reconnect",
+          "when": "activeWebviewPanelId == caerwyn.chat",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Caerwyn",
+      "properties": {
+        "caerwyn.maxMessages": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "How many recent chat messages to keep and show."
+        },
+        "caerwyn.showTimestamps": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the time next to each chat message."
+        },
+        "caerwyn.youtube.transport": {
+          "type": "string",
+          "enum": [
+            "stream",
+            "poll"
+          ],
+          "default": "stream",
+          "enumDescriptions": [
+            "Keep one streaming connection open. Uses far less YouTube API quota.",
+            "Poll for new messages every few seconds. Uses quota on every poll; only for when streaming does not work."
+          ],
+          "description": "How YouTube live chat is read."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -35,14 +126,16 @@
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile",
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc --noEmit && tsc --noEmit -p src/webview",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "watch:tsc-webview": "tsc --noEmit --watch --project src/webview/tsconfig.json"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.20.5",
     "@types/vscode": "1.100.0",
+    "@types/ws": "^8.18.2",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
     "esbuild": "^0.28.2",
@@ -50,5 +143,11 @@
     "npm-run-all": "^4.1.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.73.0"
-  }
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
+  },
+  "activationEvents": [
+    "onWebviewPanel:caerwyn.chat"
+  ]
 }

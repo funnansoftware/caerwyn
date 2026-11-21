@@ -25,26 +25,48 @@ const esbuildProblemMatcherPlugin = {
 	},
 };
 
+/** @type {import('esbuild').BuildOptions} */
+const shared = {
+	bundle: true,
+	minify: production,
+	sourcemap: !production,
+	sourcesContent: false,
+	logLevel: 'silent',
+	plugins: [esbuildProblemMatcherPlugin],
+};
+
+/** The extension host bundle (Node). @type {import('esbuild').BuildOptions} */
+const extension = {
+	...shared,
+	entryPoints: ['src/extension.ts'],
+	format: 'cjs',
+	platform: 'node',
+	target: 'node20',
+	outfile: 'dist/extension.js',
+	// `bufferutil` and `utf-8-validate` are optional native speed-ups for `ws`; it works without them.
+	external: ['vscode', 'bufferutil', 'utf-8-validate'],
+};
+
+/** The chat tab's script and stylesheet (browser). @type {import('esbuild').BuildOptions} */
+const webview = {
+	...shared,
+	entryPoints: [
+		{ in: 'src/webview/main.ts', out: 'webview' },
+		{ in: 'src/webview/chat.css', out: 'webview' },
+	],
+	format: 'iife',
+	platform: 'browser',
+	target: 'es2022',
+	outdir: 'dist',
+};
+
 async function main() {
-	const ctx = await esbuild.context({
-		entryPoints: ['src/extension.ts'],
-		bundle: true,
-		format: 'cjs',
-		minify: production,
-		sourcemap: !production,
-		sourcesContent: false,
-		platform: 'node',
-		target: 'node20',
-		outfile: 'dist/extension.js',
-		external: ['vscode'],
-		logLevel: 'silent',
-		plugins: [esbuildProblemMatcherPlugin],
-	});
+	const contexts = await Promise.all([esbuild.context(extension), esbuild.context(webview)]);
 	if (watch) {
-		await ctx.watch();
+		await Promise.all(contexts.map((ctx) => ctx.watch()));
 	} else {
-		await ctx.rebuild();
-		await ctx.dispose();
+		await Promise.all(contexts.map((ctx) => ctx.rebuild()));
+		await Promise.all(contexts.map((ctx) => ctx.dispose()));
 	}
 }
 

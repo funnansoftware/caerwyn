@@ -8,5 +8,7 @@
     "strict": true,
     "types": ["node", "mocha", "vscode"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  // The webview runs in a browser context and is type-checked by src/webview/tsconfig.json.
+  "exclude": ["src/webview"]
 }
