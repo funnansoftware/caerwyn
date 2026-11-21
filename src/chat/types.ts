@@ -12,7 +12,16 @@ export type YouTubeSource =
 	| { id: string; platform: 'youtube'; kind: 'video'; videoId: string };
 
 /** A chat room the user wants to read. `self` means the signed-in account's own channel or broadcast. */
-export type ChatSource = TwitchSource | YouTubeSource;
+export type RealSource = TwitchSource | YouTubeSource;
+
+/** A made-up chat room fed by the simulator, for developing features without signing in. */
+export interface SimulatedSource {
+	id: string;
+	platform: Platform;
+	kind: 'simulated';
+}
+
+export type ChatSource = RealSource | SimulatedSource;
 
 export const TWITCH_SELF: TwitchSource = { id: 'twitch:me', platform: 'twitch', kind: 'self' };
 export const YOUTUBE_SELF: YouTubeSource = { id: 'youtube:me', platform: 'youtube', kind: 'self' };

@@ -52,6 +52,11 @@ body {
 	font-size: 0.9em;
 }
 
+.chip.simulated {
+	border-style: dashed;
+	border-left-style: solid;
+}
+
 .dot {
 	flex: none;
 	width: 8px;

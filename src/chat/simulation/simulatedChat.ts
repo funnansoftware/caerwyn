@@ -1,0 +1,504 @@
+import { TwitchChatEvent, mapChatMessage, mapNotification } from '../twitch/twitchMapper';
+import { ChatEvent, ChatSink, Platform, SimulatedSource } from '../types';
+import { YouTubeChatItem, mapYouTubeItem } from '../youtube/youtubeMapper';
+import {
+	CHAT_LINES,
+	LONG_LINES,
+	SPAM_LINE,
+	SUPER_CHAT_AMOUNTS,
+	TWITCH_BROADCASTER,
+	TWITCH_CHATTERS,
+	TWITCH_EMOTES,
+	TWITCH_TROUBLEMAKER,
+	TwitchChatter,
+	YOUTUBE_CHATTERS,
+	YOUTUBE_OWNER,
+	YOUTUBE_TROUBLEMAKER,
+	YouTubeChatter,
+} from './sampleData';
+
+// A stand-in for live chat, for building and refining features without signing in.
+// It produces platform-shaped payloads and passes them through the real mappers, so whatever the
+// mappers learn to do is exercised here too. The payload shapes follow the platform documentation;
+// they are not recordings of real traffic.
+
+export const SIMULATED_TWITCH: SimulatedSource = { id: 'twitch:simulated', platform: 'twitch', kind: 'simulated' };
+export const SIMULATED_YOUTUBE: SimulatedSource = { id: 'youtube:simulated', platform: 'youtube', kind: 'simulated' };
+export const SIMULATED_SOURCES = [SIMULATED_TWITCH, SIMULATED_YOUTUBE];
+
+const TWITCH_CHANNEL_ID = 'simulated-twitch';
+const YOUTUBE_CHAT_ID = 'simulated-youtube';
+const YOUTUBE_CONTEXT = { sourceId: SIMULATED_YOUTUBE.id, liveChatId: YOUTUBE_CHAT_ID, channelName: YOUTUBE_OWNER.name };
+
+/** Events that empty both simulated chat rooms, for when the simulation is switched off. */
+export function simulatedClearEvents(): ChatEvent[] {
+	return [
+		{ type: 'clear', platform: 'twitch', channelId: TWITCH_CHANNEL_ID },
+		{ type: 'clear', platform: 'youtube', channelId: YOUTUBE_CHAT_ID },
+	];
+}
+
+/** Every event the simulator can produce on request, in the order the showcase plays them. */
+export const SIMULATED_EVENTS = [
+	{ kind: 'twitchMessage', label: 'Twitch: chat message' },
+	{ kind: 'youtubeMessage', label: 'YouTube: chat message' },
+	{ kind: 'twitchEmotes', label: 'Twitch: message full of emotes' },
+	{ kind: 'twitchReply', label: 'Twitch: reply to a message' },
+	{ kind: 'twitchAction', label: 'Twitch: /me action' },
+	{ kind: 'twitchBroadcaster', label: 'Twitch: message from the broadcaster' },
+	{ kind: 'youtubeOwner', label: 'YouTube: message from the channel owner' },
+	{ kind: 'longMessage', label: 'Long message' },
+	{ kind: 'twitchCheer', label: 'Twitch: cheer' },
+	{ kind: 'twitchSub', label: 'Twitch: new subscription' },
+	{ kind: 'twitchResub', label: 'Twitch: resubscription with a message' },
+	{ kind: 'twitchGiftSub', label: 'Twitch: gifted subscription' },
+	{ kind: 'twitchCommunityGift', label: 'Twitch: anonymous community gift' },
+	{ kind: 'twitchRaid', label: 'Twitch: raid' },
+	{ kind: 'twitchAnnouncement', label: 'Twitch: announcement' },
+	{ kind: 'youtubeSuperChat', label: 'YouTube: Super Chat' },
+	{ kind: 'youtubeSuperSticker', label: 'YouTube: Super Sticker' },
+	{ kind: 'youtubeNewMember', label: 'YouTube: new member' },
+	{ kind: 'youtubeMilestone', label: 'YouTube: member milestone' },
+	{ kind: 'youtubeGift', label: 'YouTube: gifted memberships' },
+	{ kind: 'twitchDelete', label: 'Twitch: delete a recent message' },
+	{ kind: 'youtubeDelete', label: 'YouTube: delete a recent message' },
+	{ kind: 'twitchTimeout', label: 'Twitch: time out a recent chatter' },
+	{ kind: 'youtubeBan', label: 'YouTube: ban a recent chatter' },
+] as const;
+
+/** Requests that are not single events, or that would wreck a showcase if played in the middle of one. */
+export const SIMULATED_ACTIONS = [
+	{ kind: 'showcase', label: 'Showcase: one of every event' },
+	{ kind: 'burst', label: 'Burst of 50 messages' },
+	{ kind: 'twitchClear', label: 'Twitch: clear the whole chat' },
+	{ kind: 'connectionDrop', label: 'Connection drop and recovery' },
+] as const;
+
+export type SimulatedEventKind = (typeof SIMULATED_EVENTS)[number]['kind'] | (typeof SIMULATED_ACTIONS)[number]['kind'];
+
+export function isSimulatedEventKind(value: unknown): value is SimulatedEventKind {
+	return [...SIMULATED_EVENTS, ...SIMULATED_ACTIONS].some((entry) => entry.kind === value);
+}
+
+/** What the automatic stream is made of, as relative weights. Mostly plain chat, like a real one. */
+const AUTOMATIC_MIX: [SimulatedEventKind, number][] = [
+	['twitchMessage', 48],
+	['youtubeMessage', 30],
+	['twitchEmotes', 3],
+	['twitchReply', 4],
+	['twitchAction', 1.5],
+	['twitchBroadcaster', 1.5],
+	['youtubeOwner', 1],
+	['longMessage', 1.5],
+	['twitchCheer', 1],
+	['twitchSub', 0.8],
+	['twitchResub', 1],
+	['twitchGiftSub', 0.6],
+	['twitchCommunityGift', 0.2],
+	['twitchRaid', 0.2],
+	['twitchAnnouncement', 0.2],
+	['youtubeSuperChat', 1.2],
+	['youtubeSuperSticker', 0.3],
+	['youtubeNewMember', 0.8],
+	['youtubeMilestone', 0.5],
+	['youtubeGift', 0.2],
+	['twitchDelete', 0.7],
+	['youtubeDelete', 0.4],
+	['twitchTimeout', 0.3],
+	['youtubeBan', 0.1],
+];
+
+const RECENT_LIMIT = 40;
+const BURST_SIZE = 50;
+/** How often to look at the rate again while it is zero. */
+const IDLE_CHECK_MS = 500;
+const RECONNECT_MS = 2500;
+
+let idCounter = 0;
+
+/** A small seeded generator (mulberry32), so a run can be repeated exactly in tests. */
+function seededRandom(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (state + 0x6d2b79f5) >>> 0;
+		let t = state;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+export interface SimulatedChatOptions {
+	sink: ChatSink;
+	/** Automatic messages per second. Zero or less means only requested events are produced. */
+	getRate(): number;
+	seed?: number;
+	now?: () => number;
+}
+
+interface Recent {
+	id: string;
+	userId: string;
+	name: string;
+	text: string;
+}
+
+export class SimulatedChat {
+	private readonly random: () => number;
+	private readonly now: () => number;
+	private readonly session: string;
+	private readonly recent: Record<Platform, Recent[]> = { twitch: [], youtube: [] };
+	private timer: NodeJS.Timeout | undefined;
+	private reconnectTimer: NodeJS.Timeout | undefined;
+	private disposed = false;
+	/** Set while the showcase plays. */
+	private staged = false;
+
+	constructor(private readonly options: SimulatedChatOptions) {
+		this.random = seededRandom(options.seed ?? Date.now());
+		this.now = options.now ?? Date.now;
+		// Message IDs must stay unique across simulator instances: history is de-duplicated by ID.
+		this.session = Date.now().toString(36);
+	}
+
+	start(): void {
+		this.options.sink.status(SIMULATED_TWITCH.id, { state: 'connected' }, `Simulated Twitch`);
+		this.options.sink.status(SIMULATED_YOUTUBE.id, { state: 'connected' }, `Simulated YouTube`);
+		this.schedule();
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		clearTimeout(this.timer);
+		clearTimeout(this.reconnectTimer);
+	}
+
+	/** Forgets the messages sent so far, so later removals and replies only target what is still on screen. */
+	forget(): void {
+		this.recent.twitch = [];
+		this.recent.youtube = [];
+	}
+
+	/** Produces one requested event immediately. */
+	emit(kind: SimulatedEventKind): void {
+		switch (kind) {
+			case 'showcase':
+				this.staged = true;
+				try {
+					for (const entry of SIMULATED_EVENTS) {
+						this.emit(entry.kind);
+					}
+				} finally {
+					this.staged = false;
+				}
+				break;
+			case 'burst':
+				for (let i = 0; i < BURST_SIZE; i++) {
+					this.emit(this.random() < 0.6 ? 'twitchMessage' : 'youtubeMessage');
+				}
+				break;
+			case 'connectionDrop':
+				this.dropConnection();
+				break;
+			case 'twitchClear':
+				this.recent.twitch = [];
+				// YouTube's list is untouched: only the Twitch room was cleared.
+				this.send({ type: 'clear', platform: 'twitch', channelId: TWITCH_CHANNEL_ID });
+				break;
+			case 'twitchMessage':
+				this.twitchChat(this.pick(TWITCH_CHATTERS), this.line());
+				break;
+			case 'twitchEmotes': {
+				const emotes = Object.keys(TWITCH_EMOTES);
+				const words = Array.from({ length: this.int(4, 10) }, () => this.pick(emotes));
+				this.twitchChat(this.pick(TWITCH_CHATTERS), words.join(' '));
+				break;
+			}
+			case 'twitchReply': {
+				const parent = this.recentOrNew('twitch');
+				this.twitchChat(this.pick(TWITCH_CHATTERS), `@${parent.name} ${this.line()}`, {
+					reply: { parent_user_name: parent.name, parent_message_body: parent.text },
+				});
+				break;
+			}
+			case 'twitchAction':
+				this.twitchChat(this.pick(TWITCH_CHATTERS), `\u0001ACTION ${this.pick(['waves at chat', 'grabs a coffee', 'takes notes'])}\u0001`);
+				break;
+			case 'twitchBroadcaster':
+				this.twitchChat(TWITCH_BROADCASTER, `@${this.pick(TWITCH_CHATTERS).name} good question, I will get to it in a minute`);
+				break;
+			case 'longMessage':
+				this.twitchChat(this.pick(TWITCH_CHATTERS), this.pick(LONG_LINES));
+				break;
+			case 'twitchCheer': {
+				const bits = this.pick([1, 100, 500, 1000]);
+				this.twitchChat(this.pick(TWITCH_CHATTERS), `Cheer${bits} ${this.line()}`, { cheer: { bits } });
+				break;
+			}
+			case 'twitchSub': {
+				const chatter = this.pick(TWITCH_CHATTERS);
+				this.twitchNotice(chatter, 'sub', `${chatter.name} subscribed at Tier 1.`);
+				break;
+			}
+			case 'twitchResub': {
+				const chatter = this.pick(TWITCH_CHATTERS);
+				const months = this.int(2, 48);
+				this.twitchNotice(chatter, 'resub', `${chatter.name} subscribed at Tier 1. They've subscribed for ${months} months!`, this.line());
+				break;
+			}
+			case 'twitchGiftSub': {
+				const chatter = this.pick(TWITCH_CHATTERS);
+				this.twitchNotice(chatter, 'sub_gift', `${chatter.name} gifted a Tier 1 sub to ${this.pick(TWITCH_CHATTERS).name}!`);
+				break;
+			}
+			case 'twitchCommunityGift':
+				this.twitchNotice(
+					this.pick(TWITCH_CHATTERS),
+					'community_sub_gift',
+					`An anonymous user is gifting ${this.pick([5, 10, 20])} Tier 1 Subs to ${TWITCH_BROADCASTER.name}'s community!`,
+					undefined,
+					{ chatter_is_anonymous: true },
+				);
+				break;
+			case 'twitchRaid': {
+				const chatter = this.pick(TWITCH_CHATTERS);
+				this.twitchNotice(chatter, 'raid', `${this.int(3, 250)} raiders from ${chatter.name} have joined!`);
+				break;
+			}
+			case 'twitchAnnouncement':
+				// Announcements carry no system message; the moderator's text is the message itself.
+				this.twitchNotice(this.pick(TWITCH_CHATTERS.filter((c) => c.badges.includes('moderator'))), 'announcement', '', 'Schedule change: next stream is Thursday');
+				break;
+			case 'twitchDelete':
+				this.send({ type: 'delete', key: `twitch:${this.takeRecent('twitch').id}` });
+				break;
+			case 'twitchTimeout': {
+				const target = this.takeRecent('twitch');
+				this.recent.twitch = this.recent.twitch.filter((entry) => entry.userId !== target.userId);
+				this.send({ type: 'purge', platform: 'twitch', channelId: TWITCH_CHANNEL_ID, userId: target.userId });
+				break;
+			}
+			case 'youtubeMessage':
+				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), { type: 'textMessageEvent', displayMessage: this.line(false) });
+				break;
+			case 'youtubeOwner':
+				this.youtubeItem(YOUTUBE_OWNER, { type: 'textMessageEvent', displayMessage: 'Welcome in, everyone. Links are in the description.' });
+				break;
+			case 'youtubeSuperChat':
+				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), {
+					type: 'superChatEvent',
+					superChatDetails: { amountDisplayString: this.pick(SUPER_CHAT_AMOUNTS), userComment: this.line(false) },
+				});
+				break;
+			case 'youtubeSuperSticker':
+				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), {
+					type: 'superStickerEvent',
+					superStickerDetails: { amountDisplayString: this.pick(SUPER_CHAT_AMOUNTS), superStickerMetadata: { altText: 'A cat waving hello' } },
+				});
+				break;
+			case 'youtubeNewMember':
+				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), { type: 'newSponsorEvent', displayMessage: 'Welcome to Early Birds!' });
+				break;
+			case 'youtubeMilestone':
+				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), {
+					type: 'memberMilestoneChatEvent',
+					memberMilestoneChatDetails: { memberMonth: this.int(2, 36), memberLevelName: 'Early Birds', userComment: this.line(false) },
+				});
+				break;
+			case 'youtubeGift': {
+				const chatter = this.pick(YOUTUBE_CHATTERS);
+				this.youtubeItem(chatter, {
+					type: 'membershipGiftingEvent',
+					displayMessage: `${chatter.name} gifted ${this.pick([1, 5, 10])} ${YOUTUBE_OWNER.name} memberships`,
+				});
+				break;
+			}
+			case 'youtubeDelete':
+				this.youtubeItem(YOUTUBE_OWNER, {
+					type: 'messageDeletedEvent',
+					messageDeletedDetails: { deletedMessageId: this.takeRecent('youtube').id },
+				});
+				break;
+			case 'youtubeBan': {
+				const target = this.takeRecent('youtube');
+				this.recent.youtube = this.recent.youtube.filter((entry) => entry.userId !== target.userId);
+				this.youtubeItem(YOUTUBE_OWNER, {
+					type: 'userBannedEvent',
+					userBannedDetails: { bannedUserDetails: { channelId: target.userId } },
+				});
+				break;
+			}
+		}
+	}
+
+	private schedule(): void {
+		const rate = this.options.getRate();
+		// Exponentially distributed gaps give the uneven rhythm of real chat.
+		const delay = rate > 0 ? Math.min(5000, Math.max(20, (-Math.log(1 - this.random()) / rate) * 1000)) : IDLE_CHECK_MS;
+		this.timer = setTimeout(() => {
+			if (this.disposed) {
+				return;
+			}
+			if (this.options.getRate() > 0) {
+				this.emit(this.weighted());
+			}
+			this.schedule();
+		}, delay);
+	}
+
+	private weighted(): SimulatedEventKind {
+		const total = AUTOMATIC_MIX.reduce((sum, [, weight]) => sum + weight, 0);
+		let roll = this.random() * total;
+		for (const [kind, weight] of AUTOMATIC_MIX) {
+			roll -= weight;
+			if (roll < 0) {
+				return kind;
+			}
+		}
+		return 'twitchMessage';
+	}
+
+	private dropConnection(): void {
+		for (const source of SIMULATED_SOURCES) {
+			this.options.sink.status(source.id, { state: 'connecting', detail: 'Reconnecting…' });
+		}
+		clearTimeout(this.reconnectTimer);
+		this.reconnectTimer = setTimeout(() => {
+			for (const source of SIMULATED_SOURCES) {
+				this.options.sink.status(source.id, { state: 'connected' });
+			}
+		}, RECONNECT_MS);
+	}
+
+	private send(event: ChatEvent): void {
+		if (!this.disposed) {
+			this.options.sink.event(event);
+		}
+	}
+
+	private nextId(): string {
+		return `sim-${this.session}-${++idCounter}`;
+	}
+
+	private pick<T>(items: readonly T[]): T {
+		return items[Math.floor(this.random() * items.length)];
+	}
+
+	private int(min: number, max: number): number {
+		return min + Math.floor(this.random() * (max - min + 1));
+	}
+
+	/** A chat line. Emote names only mean something on Twitch, so YouTube lines leave them out. */
+	private line(withEmotes = true): string {
+		const lines = withEmotes ? CHAT_LINES : CHAT_LINES.filter((line) => !line.split(' ').some((word) => word in TWITCH_EMOTES));
+		return this.pick(lines);
+	}
+
+	private remember(platform: Platform, entry: Recent): void {
+		const list = this.recent[platform];
+		list.push(entry);
+		if (list.length > RECENT_LIMIT) {
+			list.shift();
+		}
+	}
+
+	/** A recent message to act on, creating one first if the chat is empty. */
+	private recentOrNew(platform: Platform): Recent {
+		if (this.recent[platform].length === 0) {
+			this.emit(platform === 'twitch' ? 'twitchMessage' : 'youtubeMessage');
+		}
+		return this.pick(this.recent[platform]);
+	}
+
+	/** Like `recentOrNew`, but the message cannot be picked again: it is about to be removed. */
+	private takeRecent(platform: Platform): Recent {
+		if (this.staged) {
+			// In a showcase, remove a throwaway message so the other examples stay on screen.
+			if (platform === 'twitch') {
+				this.twitchChat(TWITCH_TROUBLEMAKER, SPAM_LINE);
+			} else {
+				this.youtubeItem(YOUTUBE_TROUBLEMAKER, { type: 'textMessageEvent', displayMessage: SPAM_LINE });
+			}
+			return this.recent[platform].pop() as Recent;
+		}
+		const entry = this.recentOrNew(platform);
+		this.recent[platform] = this.recent[platform].filter((other) => other !== entry);
+		return entry;
+	}
+
+	/** Splits text the way Twitch does: emote names and @mentions become their own fragments. */
+	private twitchBody(text: string): NonNullable<TwitchChatEvent['message']> {
+		const fragments: NonNullable<NonNullable<TwitchChatEvent['message']>['fragments']> = [];
+		let plain = '';
+		const flush = () => {
+			if (plain) {
+				fragments.push({ type: 'text', text: plain });
+				plain = '';
+			}
+		};
+		for (const token of text.split(/(\s+)/)) {
+			if (token in TWITCH_EMOTES) {
+				flush();
+				fragments.push({ type: 'emote', text: token, emote: { id: TWITCH_EMOTES[token], format: ['static'] } });
+			} else if (/^@\S+$/.test(token)) {
+				flush();
+				fragments.push({ type: 'mention', text: token });
+			} else {
+				plain += token;
+			}
+		}
+		flush();
+		return { text, fragments };
+	}
+
+	private twitchEvent(chatter: TwitchChatter, text: string | undefined, extra: Partial<TwitchChatEvent>): TwitchChatEvent {
+		return {
+			broadcaster_user_id: TWITCH_CHANNEL_ID,
+			broadcaster_user_login: TWITCH_BROADCASTER.login,
+			broadcaster_user_name: TWITCH_BROADCASTER.name,
+			chatter_user_id: chatter.id,
+			chatter_user_login: chatter.login,
+			chatter_user_name: chatter.name,
+			message_id: this.nextId(),
+			color: chatter.color,
+			badges: chatter.badges.map((set_id) => ({ set_id })),
+			message: text === undefined ? { text: '', fragments: [] } : this.twitchBody(text),
+			...extra,
+		};
+	}
+
+	private twitchChat(chatter: TwitchChatter, text: string, extra: Partial<TwitchChatEvent> = {}): void {
+		const event = this.twitchEvent(chatter, text, extra);
+		const plainText = text.replace(/\u0001(ACTION )?/g, '');
+		this.remember('twitch', { id: event.message_id, userId: chatter.id, name: chatter.name, text: plainText });
+		this.send({ type: 'message', message: mapChatMessage(event, SIMULATED_TWITCH.id, this.now()) });
+	}
+
+	private twitchNotice(chatter: TwitchChatter, noticeType: string, systemMessage: string, text?: string, extra: Partial<TwitchChatEvent> = {}): void {
+		const event = this.twitchEvent(chatter, text, { notice_type: noticeType, system_message: systemMessage, ...extra });
+		this.send({ type: 'message', message: mapNotification(event, SIMULATED_TWITCH.id, this.now()) });
+	}
+
+	private youtubeItem(chatter: YouTubeChatter, snippet: NonNullable<YouTubeChatItem['snippet']>): void {
+		const id = this.nextId();
+		const item: YouTubeChatItem = {
+			id,
+			snippet: { liveChatId: YOUTUBE_CHAT_ID, publishedAt: new Date(this.now()).toISOString(), ...snippet },
+			authorDetails: {
+				channelId: chatter.channelId,
+				displayName: chatter.name,
+				isChatOwner: chatter.owner,
+				isChatModerator: chatter.moderator,
+				isChatSponsor: chatter.member,
+				isVerified: chatter.verified,
+			},
+		};
+		if (snippet.type === 'textMessageEvent') {
+			this.remember('youtube', { id, userId: chatter.channelId, name: chatter.name, text: snippet.displayMessage ?? '' });
+		}
+		const mapped = mapYouTubeItem(item, YOUTUBE_CONTEXT);
+		if (mapped && mapped !== 'ended') {
+			this.send(mapped);
+		}
+	}
+}

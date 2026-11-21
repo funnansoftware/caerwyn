@@ -57,6 +57,20 @@ Chat is only read while the chat tab is open. Closing the tab disconnects.
 
 Problems are logged to the **Caerwyn** output channel.
 
+## Simulated chat
+
+Simulated chat fills the tab with made-up Twitch and YouTube chat, so you can try Caerwyn or work on its features without signing in. The tab is titled **Caerwyn Chat (Simulated)** while it is on.
+
+- **Caerwyn: Toggle Simulated Chat** switches it on or off. It stays on across restarts until you switch it off, and switching it off removes the simulated messages.
+- **Caerwyn: Simulate Chat Event…** sends one event of your choice: a subscription, raid, Super Chat, deleted message, timeout, cleared chat, a burst of 50 messages, a dropped connection and so on. **Showcase** sends one of every kind. The same command is on the chat tab's title bar while simulation is on.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `caerwyn.simulation.enabled` | `false` | Shows simulated chat. |
+| `caerwyn.simulation.messagesPerSecond` | `2` | How fast simulated chat arrives. `0` stops the automatic flow, leaving only the events you send, so the view holds still while you work on it. |
+
+The simulator builds payloads shaped like the platforms' documented ones and runs them through the same mapping code as real chat. It is not a recording of real traffic, so it shows how Caerwyn displays an event, not that a platform sends exactly that.
+
 ## Development
 
 Prerequisites: Node.js 20+ and VS Code 1.100+.
@@ -66,6 +80,7 @@ npm install
 ```
 
 - **Run:** open this folder in VS Code and press `F5`. That starts the watch build and opens an Extension Development Host window. In that window, run **Caerwyn: Open Chat** from the Command Palette.
+- **Iterate on the chat view:** switch on [simulated chat](#simulated-chat). After changing `src/webview/`, run **Developer: Reload Webviews** in the Extension Development Host to load the rebuilt script and stylesheet. The recent messages are shown again, but without removed ones, since those are dropped from history; run **Caerwyn: Clear Chat** and then the **Showcase** event to see "message deleted" rows again. Changes elsewhere in `src/` need the host restarted (the restart button on the debug toolbar).
 - **Build:** `npm run compile` type-checks, lints and bundles to `dist/`.
 - **Test:** `npm test` compiles the tests to `out/` and runs them in a downloaded VS Code instance. The tests use a local stand-in for each platform and need no accounts.
 - **Package:** `npx @vscode/vsce package` produces a `.vsix`.
@@ -75,5 +90,6 @@ npm install
 - `src/auth/` signs in with the OAuth device flow and keeps tokens fresh. Each platform implements `OAuthClient`.
 - `src/chat/twitch/` reads Twitch chat through EventSub over WebSocket.
 - `src/chat/youtube/` reads YouTube chat through the Data API's streaming method.
+- `src/chat/simulation/` produces simulated chat. `sampleData.ts` holds the made-up chatters and lines; `simulatedChat.ts` lists every event it can produce.
 - `src/chat/chatService.ts` owns the list of chat sources, their connections and the recent message history. Both platforms are mapped to the types in `src/chat/types.ts`.
 - `src/panel/` hosts the chat tab, and `src/webview/` is the script and stylesheet that render it. The webview is type-checked separately because it runs in a browser context.

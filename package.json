@@ -69,6 +69,17 @@
         "title": "Clear Chat",
         "category": "Caerwyn",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "caerwyn.toggleSimulation",
+        "title": "Toggle Simulated Chat",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.simulateEvent",
+        "title": "Simulate Chat Event…",
+        "category": "Caerwyn",
+        "icon": "$(beaker)"
       }
     ],
     "menus": {
@@ -82,6 +93,11 @@
           "command": "caerwyn.reconnect",
           "when": "activeWebviewPanelId == caerwyn.chat",
           "group": "navigation@2"
+        },
+        {
+          "command": "caerwyn.simulateEvent",
+          "when": "activeWebviewPanelId == 'caerwyn.chat' && config.caerwyn.simulation.enabled",
+          "group": "navigation@0"
         }
       ]
     },
@@ -112,6 +128,18 @@
             "Poll for new messages every few seconds. Uses quota on every poll; only for when streaming does not work."
           ],
           "description": "How YouTube live chat is read."
+        },
+        "caerwyn.simulation.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show simulated Twitch and YouTube chat, for developing and trying out Caerwyn without signing in."
+        },
+        "caerwyn.simulation.messagesPerSecond": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "How fast simulated chat arrives. Set to 0 to produce only the events you request with \"Caerwyn: Simulate Chat Event…\"."
         }
       }
     }

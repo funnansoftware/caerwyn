@@ -3,6 +3,15 @@ import * as vscode from 'vscode';
 import { delay, waitFor } from './helpers';
 
 suite('Extension', () => {
+	const isChatTab = (tab: vscode.Tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith('caerwyn.chat');
+	const chatTabs = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter(isChatTab);
+	// The simulation setting is a user setting and outlives a test run, so make sure it starts and ends off.
+	const resetSimulation = () =>
+		vscode.workspace.getConfiguration('caerwyn').update('simulation.enabled', undefined, vscode.ConfigurationTarget.Global);
+
+	suiteSetup(resetSimulation);
+	suiteTeardown(resetSimulation);
+
 	test('activates and registers its commands', async () => {
 		const ext = vscode.extensions.getExtension('funnansoftware.caerwyn');
 		assert.ok(ext, 'extension should be installed in the test host');
@@ -38,5 +47,21 @@ suite('Extension', () => {
 
 		await vscode.window.tabGroups.close(tabs());
 		await waitFor(() => tabs().length === 0, 'the chat tab to close');
+	});
+
+	test('simulating an event switches simulation on, opens the tab and marks it as simulated', async () => {
+		const enabled = () => vscode.workspace.getConfiguration('caerwyn').get<boolean>('simulation.enabled');
+		assert.strictEqual(enabled(), false);
+
+		await vscode.commands.executeCommand('caerwyn.simulateEvent', 'showcase');
+		assert.strictEqual(enabled(), true, 'the setting is saved so the simulation survives a reload');
+		await waitFor(() => chatTabs()[0]?.label === 'Caerwyn Chat (Simulated)', 'the tab to be marked as simulated');
+
+		await vscode.commands.executeCommand('caerwyn.toggleSimulation');
+		assert.strictEqual(enabled(), false);
+		await waitFor(() => chatTabs()[0]?.label === 'Caerwyn Chat', 'the tab title to go back to normal');
+
+		await vscode.window.tabGroups.close(chatTabs());
+		await waitFor(() => chatTabs().length === 0, 'the chat tab to close');
 	});
 });

@@ -6,4 +6,5 @@ All notable changes to the "caerwyn" extension will be documented in this file.
 
 - Read-only Twitch and YouTube live chat in one editor tab.
 - OAuth sign-in for both platforms.
+- Simulated chat for trying Caerwyn and developing features without signing in.
 - Initial scaffold

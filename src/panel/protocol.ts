@@ -14,7 +14,14 @@ export type HostMessage =
 	| { type: 'settings'; settings: ViewSettings }
 	| { type: 'reset' };
 
-export const VIEW_ACTIONS = ['signInTwitch', 'signInYouTube', 'addTwitchChannel', 'addYouTubeStream', 'reconnect'] as const;
+export const VIEW_ACTIONS = [
+	'signInTwitch',
+	'signInYouTube',
+	'addTwitchChannel',
+	'addYouTubeStream',
+	'reconnect',
+	'toggleSimulation',
+] as const;
 export type ViewAction = (typeof VIEW_ACTIONS)[number];
 
 export type WebviewMessage = { type: 'ready' } | { type: 'action'; action: ViewAction };

@@ -1,4 +1,5 @@
 import { Disposable, Emitter } from '../util/emitter';
+import { SIMULATED_SOURCES, SimulatedChat, SimulatedEventKind, simulatedClearEvents } from './simulation/simulatedChat';
 import { TwitchChat } from './twitch/twitchChat';
 import {
 	ChatAuth,
@@ -7,6 +8,7 @@ import {
 	ChatSink,
 	ChatSource,
 	Platform,
+	RealSource,
 	SourceInfo,
 	SourceStatus,
 	TwitchSource,
@@ -23,6 +25,11 @@ export interface StateStore {
 export interface ChatServiceConfig {
 	maxMessages: number;
 	youtubeTransport: YouTubeTransport;
+	simulation: {
+		enabled: boolean;
+		/** Automatic messages per second; zero leaves only events requested by hand. */
+		messagesPerSecond: number;
+	};
 }
 
 export interface PlatformAuth extends ChatAuth {
@@ -53,7 +60,7 @@ export class ChatService {
 	readonly onSources = this.sourcesEmitter.event;
 	readonly onReset = this.resetEmitter.event;
 
-	private sourceList: ChatSource[];
+	private sourceList: RealSource[];
 	private readonly statuses = new Map<string, SourceStatus>();
 	private readonly labels = new Map<string, string>();
 	private buffer: ChatMessage[] = [];
@@ -64,11 +71,14 @@ export class ChatService {
 	private running = false;
 	private twitch: TwitchChat | undefined;
 	private readonly youtube = new Map<string, YouTubeChat>();
+	private simulating: boolean;
+	private simulation: SimulatedChat | undefined;
 	private readonly subscriptions: Disposable[];
 	private readonly sink: ChatSink;
 
 	constructor(private readonly options: ChatServiceOptions) {
-		this.sourceList = options.state.get<ChatSource[]>(SOURCES_KEY) ?? [];
+		this.sourceList = options.state.get<RealSource[]>(SOURCES_KEY) ?? [];
+		this.simulating = options.getConfig().simulation.enabled;
 		this.sink = {
 			event: (event) => this.onEvent(event),
 			status: (sourceId, status, label) => this.onStatus(sourceId, status, label),
@@ -84,8 +94,17 @@ export class ChatService {
 		return this.buffer;
 	}
 
+	/** Whether simulated chat is switched on. */
+	get isSimulating(): boolean {
+		return this.simulating;
+	}
+
+	private get allSources(): ChatSource[] {
+		return this.simulating ? [...this.sourceList, ...SIMULATED_SOURCES] : this.sourceList;
+	}
+
 	get sources(): SourceInfo[] {
-		return this.sourceList.map((source) => ({
+		return this.allSources.map((source) => ({
 			source,
 			label: this.labels.get(source.id) ?? defaultLabel(source),
 			status: this.statuses.get(source.id) ?? { state: 'idle' },
@@ -99,10 +118,13 @@ export class ChatService {
 		this.running = true;
 		this.rebuild('twitch');
 		this.rebuild('youtube');
+		this.rebuildSimulation();
 	}
 
 	stop(): void {
 		this.running = false;
+		this.simulation?.dispose();
+		this.simulation = undefined;
 		for (const timer of this.rebuildTimers.values()) {
 			clearTimeout(timer);
 		}
@@ -114,7 +136,7 @@ export class ChatService {
 	}
 
 	/** Adds a source unless it is already there. Returns whether it was added. */
-	async addSource(source: ChatSource): Promise<boolean> {
+	async addSource(source: RealSource): Promise<boolean> {
 		if (this.sourceList.some((existing) => existing.id === source.id)) {
 			return false;
 		}
@@ -145,10 +167,38 @@ export class ChatService {
 		}
 	}
 
+	/** Picks up a change to the simulation setting. Turning it off also removes the simulated messages. */
+	refreshConfig(): void {
+		const enabled = this.options.getConfig().simulation.enabled;
+		if (enabled === this.simulating) {
+			return;
+		}
+		this.simulating = enabled;
+		if (!enabled) {
+			for (const source of SIMULATED_SOURCES) {
+				this.statuses.delete(source.id);
+			}
+			// Simulated chat must never linger next to real chat.
+			simulatedClearEvents().forEach((event) => this.onEvent(event));
+		}
+		this.rebuildSimulation();
+		this.sourcesEmitter.fire(this.sources);
+	}
+
+	/** Produces one simulated event now. Returns false when the simulation is not running. */
+	simulate(kind: SimulatedEventKind): boolean {
+		if (!this.simulation) {
+			return false;
+		}
+		this.simulation.emit(kind);
+		return true;
+	}
+
 	clearMessages(): void {
 		this.buffer = [];
 		this.keys.clear();
 		this.pending = [];
+		this.simulation?.forget();
 		this.resetEmitter.fire();
 	}
 
@@ -201,6 +251,18 @@ export class ChatService {
 		}
 	}
 
+	private rebuildSimulation(): void {
+		this.simulation?.dispose();
+		this.simulation = undefined;
+		if (this.running && this.simulating) {
+			this.simulation = new SimulatedChat({
+				sink: this.sink,
+				getRate: () => this.options.getConfig().simulation.messagesPerSecond,
+			});
+			this.simulation.start();
+		}
+	}
+
 	private disposeConnections(platform: Platform): void {
 		if (platform === 'twitch') {
 			this.twitch?.dispose();
@@ -214,7 +276,7 @@ export class ChatService {
 	}
 
 	private onStatus(sourceId: string, status: SourceStatus, label?: string): void {
-		if (!this.sourceList.some((source) => source.id === sourceId)) {
+		if (!this.allSources.some((source) => source.id === sourceId)) {
 			return;
 		}
 		this.statuses.set(sourceId, status);
@@ -275,6 +337,9 @@ export class ChatService {
 }
 
 export function defaultLabel(source: ChatSource): string {
+	if (source.kind === 'simulated') {
+		return source.platform === 'twitch' ? 'Simulated Twitch' : 'Simulated YouTube';
+	}
 	if (source.kind === 'self') {
 		return source.platform === 'twitch' ? 'Your Twitch channel' : 'Your YouTube broadcast';
 	}

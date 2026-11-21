@@ -4,7 +4,8 @@ import { GoogleOAuth } from './auth/googleOAuth';
 import { SignInPlatform, signIn, signOut } from './auth/signIn';
 import { TwitchOAuth, validateTwitchToken } from './auth/twitchOAuth';
 import { ChatService } from './chat/chatService';
-import { Account, ChatSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, youtubeVideoSource } from './chat/types';
+import { SIMULATED_ACTIONS, SIMULATED_EVENTS, SimulatedEventKind, isSimulatedEventKind } from './chat/simulation/simulatedChat';
+import { Account, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, youtubeVideoSource } from './chat/types';
 import { parseVideoId } from './chat/youtube/videoId';
 import { YouTubeTransport } from './chat/youtube/youtubeChat';
 import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
@@ -91,6 +92,10 @@ export function activate(context: vscode.ExtensionContext) {
 			return {
 				maxMessages: config.get<number>('maxMessages', 500),
 				youtubeTransport: config.get<YouTubeTransport>('youtube.transport', 'stream'),
+				simulation: {
+					enabled: config.get<boolean>('simulation.enabled', false),
+					messagesPerSecond: config.get<number>('simulation.messagesPerSecond', 2),
+				},
 			};
 		},
 		log,
@@ -98,12 +103,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const openChat = () => ChatPanel.show(context, service);
 
-	const addSource = async (source: ChatSource) => {
+	const addSource = async (source: RealSource) => {
 		await service.addSource(source);
 		openChat();
 	};
 
-	const signInAndShow = async (platform: SignInPlatform, own: ChatSource) => {
+	const signInAndShow = async (platform: SignInPlatform, own: RealSource) => {
 		if (await signIn(platform)) {
 			await addSource(own);
 		}
@@ -138,7 +143,7 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 
 	const removeSource = async () => {
-		const sources = service.sources;
+		const sources = service.sources.filter((info) => info.source.kind !== 'simulated');
 		if (sources.length === 0) {
 			void vscode.window.showInformationMessage('There are no chat sources to remove.');
 			return;
@@ -156,6 +161,34 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	};
 
+	const setSimulation = async (enabled: boolean) => {
+		// A user setting, so the simulation is still on after the window reloads or the tab is restored.
+		await vscode.workspace.getConfiguration('caerwyn').update('simulation.enabled', enabled, vscode.ConfigurationTarget.Global);
+		service.refreshConfig();
+		if (enabled) {
+			openChat();
+		}
+	};
+
+	const simulateEvent = async (requested?: unknown) => {
+		let kind: SimulatedEventKind | undefined = isSimulatedEventKind(requested) ? requested : undefined;
+		if (!kind) {
+			const picked = await vscode.window.showQuickPick(
+				[...SIMULATED_ACTIONS, ...SIMULATED_EVENTS].map((entry) => ({ label: entry.label, event: entry.kind })),
+				{ title: 'Simulate Chat Event' },
+			);
+			kind = picked?.event;
+		}
+		if (!kind) {
+			return;
+		}
+		if (!service.isSimulating) {
+			await setSimulation(true);
+		}
+		openChat();
+		service.simulate(kind);
+	};
+
 	context.subscriptions.push(
 		output,
 		{ dispose: () => service.dispose() },
@@ -169,9 +202,14 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('caerwyn.removeSource', removeSource),
 		vscode.commands.registerCommand('caerwyn.reconnect', () => service.reconnect()),
 		vscode.commands.registerCommand('caerwyn.clearChat', () => service.clearMessages()),
+		vscode.commands.registerCommand('caerwyn.toggleSimulation', () => setSimulation(!service.isSimulating)),
+		vscode.commands.registerCommand('caerwyn.simulateEvent', simulateEvent),
 		vscode.workspace.onDidChangeConfiguration((event) => {
 			if (event.affectsConfiguration('caerwyn.youtube.transport')) {
 				service.reconnect();
+			}
+			if (event.affectsConfiguration('caerwyn.simulation')) {
+				service.refreshConfig();
 			}
 		}),
 		// Lets VS Code restore the chat tab, and the layout it was part of, after a restart.

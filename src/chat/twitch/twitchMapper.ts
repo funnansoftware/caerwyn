@@ -139,6 +139,8 @@ export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timesta
 /** Maps a `channel.chat.notification` event (subscriptions, raids, announcements and so on). */
 export function mapNotification(event: TwitchChatEvent, sourceId: string, timestamp: number): ChatMessage {
 	const message = base(event, sourceId, timestamp);
-	message.headline = event.system_message || (event.notice_type ?? 'notice').replace(/_/g, ' ');
+	// Some notices, such as announcements, have no system message; name the notice type instead.
+	const fallback = (event.notice_type ?? 'notice').replace(/_/g, ' ');
+	message.headline = event.system_message || fallback.charAt(0).toUpperCase() + fallback.slice(1);
 	return message;
 }

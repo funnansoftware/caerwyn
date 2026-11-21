@@ -169,6 +169,8 @@ function updateEmpty(): void {
 			el('p', 'empty-text', 'Sign in to read your Twitch and YouTube live chat here.'),
 			actionButton('Sign in to Twitch', 'signInTwitch'),
 			actionButton('Sign in to YouTube', 'signInYouTube'),
+			el('p', 'empty-text', 'Or try it without an account:'),
+			actionButton('Start simulated chat', 'toggleSimulation'),
 		);
 	} else {
 		empty.append(el('p', 'empty-text', 'No messages yet.'));
@@ -246,6 +248,7 @@ function renderSources(): void {
 	for (const info of sources) {
 		const { state, detail } = info.status;
 		const chip = el('span', `chip ${info.source.platform} state-${state}`);
+		chip.classList.toggle('simulated', info.source.kind === 'simulated');
 		chip.title = detail ?? STATE_TEXT[state] ?? 'Connected';
 		chip.append(el('span', 'dot'), el('span', 'chip-label', info.label));
 		if (state === 'needsSignIn') {

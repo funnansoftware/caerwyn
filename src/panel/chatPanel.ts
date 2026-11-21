@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/chatService';
+import { SourceInfo } from '../chat/types';
 import { HostMessage, VIEW_ACTIONS, ViewAction, ViewSettings, WebviewMessage } from './protocol';
 
 export const CHAT_VIEW_TYPE = 'caerwyn.chat';
@@ -65,7 +66,10 @@ export class ChatPanel {
 		this.disposables.push(
 			panel.webview.onDidReceiveMessage((message: WebviewMessage) => this.onMessage(message)),
 			service.onEvents((events) => this.post({ type: 'events', events })),
-			service.onSources((sources) => this.post({ type: 'sources', sources })),
+			service.onSources((sources) => {
+				this.updateTitle(sources);
+				this.post({ type: 'sources', sources });
+			}),
 			service.onReset(() => this.post({ type: 'reset' })),
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				if (event.affectsConfiguration('caerwyn')) {
@@ -75,6 +79,13 @@ export class ChatPanel {
 			panel.onDidDispose(() => this.dispose()),
 		);
 		service.start();
+		this.updateTitle(service.sources);
+	}
+
+	/** This tab may be on stream, so simulated chat is labelled where it cannot be missed. */
+	private updateTitle(sources: SourceInfo[]): void {
+		const simulated = sources.some((info) => info.source.kind === 'simulated');
+		this.panel.title = simulated ? 'Caerwyn Chat (Simulated)' : 'Caerwyn Chat';
 	}
 
 	private onMessage(message: WebviewMessage): void {
