@@ -68,12 +68,31 @@ Click a name to open that viewer's user card. It lists everything they have said
 
 Problems are logged to the **Caerwyn** output channel.
 
+## Chat controls
+
+Chat controls let viewers in your own chat run commands, such as `!theme`, that change your editor. They are off until you switch on `caerwyn.controls.enabled`. No commands are available yet; they will be added one at a time.
+
+- Only your own Twitch channel and YouTube broadcast, added with **Sign In**, are listened to. A chat you only read, even your own channel added by name, is never listened to.
+- Each command says who may use it (everyone, subscribers and YouTube members, VIPs, moderators or only you) and how often, overall and per viewer. You are never held back by a cooldown, and your own use does not start one for viewers. A command that cannot be carried out, such as a theme name with a typo, does not use up the viewer's turn.
+- A viewer's command waits `caerwyn.controls.delaySeconds` before it runs. Deleting the message, or timing out or banning the viewer, in that time cancels it. Your own commands and your moderators' run at once.
+- While controls are on, a status bar item shows whether they are listening. Click it, or run **Caerwyn: Pause or Resume Chat Controls**, to stop them at once. A pause lasts until you resume, even across restarts, and other VS Code windows honour it too, although their status bar may not show it until it next updates.
+- What happens to each command, including ones that were refused, is logged to the **Caerwyn** output channel.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `caerwyn.controls.enabled` | `false` | Lets your chat run commands. |
+| `caerwyn.controls.delaySeconds` | `5` | How long a viewer's command waits, so a moderator can remove it first. |
+| `caerwyn.controls.commands` | `{}` | Changes a command's defaults, by name: `enabled`, `allowed`, `cooldownSeconds`, `userCooldownSeconds`. For example `{ "theme": { "allowed": "subscriber", "cooldownSeconds": 120 } }`. |
+
+These settings are only read from your user settings, never from a workspace's `.vscode/settings.json`, so opening someone else's project cannot hand your editor to chat.
+
 ## Simulated chat
 
 Simulated chat fills the tab with made-up Twitch and YouTube chat, so you can try Caerwyn or work on its features without signing in. The tab is titled **Caerwyn Chat (Simulated)** while it is on.
 
 - **Caerwyn: Toggle Simulated Chat** switches it on or off. It stays on across restarts until you switch it off, and switching it off removes the simulated messages.
 - **Caerwyn: Simulate Chat Event…** sends one event of your choice: a subscription, raid, Super Chat, deleted message, timeout, cleared chat, a burst of 50 messages, a dropped connection and so on. **Showcase** sends one of every kind. The same command is on the chat tab's title bar while simulation is on.
+- **Caerwyn: Simulate Chat Command…** sends a message you type, such as `!theme dracula`, from a simulated viewer, subscriber, VIP, moderator or broadcaster, to try [chat controls](#chat-controls).
 
 | Setting | Default | What it does |
 | --- | --- | --- |
@@ -103,5 +122,6 @@ npm install
 - `src/chat/youtube/` reads YouTube chat through the Data API's streaming method.
 - `src/chat/simulation/` produces simulated chat. `sampleData.ts` holds the made-up chatters and lines; `simulatedChat.ts` lists every event it can produce.
 - `src/chat/chatService.ts` owns the list of chat sources, their connections and the recent message history.
+- `src/controls/chatControls.ts` picks chat commands out of your own chat and decides whether each may run: who sent it, cooldowns, the delay and the pause switch. Commands register with `ChatControls.register()`.
 - `src/chat/history.ts` saves each viewer's messages to disk, one JSON Lines file per viewer per channel, for the user card. Both platforms are mapped to the types in `src/chat/types.ts`.
 - `src/panel/` hosts the chat tab, and `src/webview/` is the script and stylesheet that render it. The webview is type-checked separately because it runs in a browser context.

@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { TWITCH_EMOTES } from '../chat/simulation/sampleData';
-import { SIMULATED_ACTIONS, SIMULATED_EVENTS, SimulatedChat, isSimulatedEventKind } from '../chat/simulation/simulatedChat';
-import { ChatEvent, ChatMessage } from '../chat/types';
+import { SIMULATED_ACTIONS, SIMULATED_EVENTS, SIMULATED_SPEAKERS, SimulatedChat, SimulatedSpeaker, isSimulatedEventKind } from '../chat/simulation/simulatedChat';
+import { ChatEvent, ChatMessage, Role } from '../chat/types';
 import { youtubeEmojiUrl } from '../chat/youtube/youtubeEmoji';
 import { RecordingSink, delay } from './helpers';
 
@@ -169,6 +169,31 @@ suite('SimulatedChat', () => {
 		const raiders = Number(/^(\d+) raiders/.exec(raid.headline ?? '')?.[1]);
 		assert.strictEqual(sink.viewerCount('twitch:simulated'), before + raiders);
 		chat.dispose();
+	});
+
+	test('sends typed text from a chatter of the requested standing', () => {
+		const { sink, chat } = simulator();
+		const expected: Record<SimulatedSpeaker, Role | undefined> = { viewer: undefined, subscriber: 'subscriber', vip: 'vip', moderator: 'moderator', broadcaster: 'broadcaster' };
+		for (const speaker of SIMULATED_SPEAKERS) {
+			for (const platform of ['twitch', 'youtube'] as const) {
+				sink.events.length = 0;
+				chat.say(platform, speaker, '!theme  dracula');
+				const [message] = messages(sink.events);
+				assert.strictEqual(message.platform, platform);
+				assert.strictEqual(message.fragments.map((f) => f.text).join(''), '!theme  dracula');
+				// YouTube has no VIPs, so its VIP is an ordinary viewer.
+				const role = platform === 'youtube' && speaker === 'vip' ? undefined : expected[speaker];
+				const shown: Role[] = message.author.roles.filter((r) => r !== 'verified');
+				if (role) {
+					assert.ok(shown.includes(role), `${platform} ${speaker}: ${shown.join(', ')}`);
+				} else {
+					assert.deepStrictEqual(shown, [], `${platform} ${speaker} has no roles`);
+				}
+				if (speaker === 'subscriber') {
+					assert.ok(!shown.includes('moderator') && !shown.includes('vip'), `${platform} subscriber outranks a subscriber`);
+				}
+			}
+		}
 	});
 
 	test('recognises requestable event names', () => {

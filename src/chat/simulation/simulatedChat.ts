@@ -84,6 +84,13 @@ export const SIMULATED_ACTIONS = [
 
 export type SimulatedEventKind = (typeof SIMULATED_EVENTS)[number]['kind'] | (typeof SIMULATED_ACTIONS)[number]['kind'];
 
+/** Who a typed simulated message comes from. YouTube has no VIPs, so a YouTube `vip` is an ordinary viewer. */
+export const SIMULATED_SPEAKERS = ['viewer', 'subscriber', 'vip', 'moderator', 'broadcaster'] as const;
+export type SimulatedSpeaker = (typeof SIMULATED_SPEAKERS)[number];
+
+/** Twitch badges that carry a role. A chatter with none of them is an ordinary viewer. */
+const TWITCH_ROLE_BADGES = ['broadcaster', 'moderator', 'vip', 'subscriber', 'founder'];
+
 export function isSimulatedEventKind(value: unknown): value is SimulatedEventKind {
 	return [...SIMULATED_EVENTS, ...SIMULATED_ACTIONS].some((entry) => entry.kind === value);
 }
@@ -259,6 +266,46 @@ export class SimulatedChat {
 		} else {
 			this.youtubeItem(YOUTUBE_OWNER, { type: 'userBannedEvent', userBannedDetails: { bannedUserDetails: { channelId: userId } } });
 		}
+	}
+
+	/** Sends `text` as a chat message from a simulated chatter of the given standing, such as a chat command to try. */
+	say(platform: Platform, speaker: SimulatedSpeaker, text: string): void {
+		if (platform === 'twitch') {
+			const matches = (chatter: TwitchChatter): boolean => {
+				const roles = chatter.badges.filter((badge) => TWITCH_ROLE_BADGES.includes(badge));
+				switch (speaker) {
+					case 'moderator':
+						return roles.includes('moderator');
+					case 'vip':
+						return roles.includes('vip') && !roles.includes('moderator');
+					case 'subscriber':
+						return (roles.includes('subscriber') || roles.includes('founder')) && !roles.includes('moderator') && !roles.includes('vip');
+					default:
+						return roles.length === 0;
+				}
+			};
+			const chatter = speaker === 'broadcaster' ? TWITCH_BROADCASTER : this.pickMatching(this.allowed('twitch', TWITCH_CHATTERS, (c) => c.id), TWITCH_CHATTERS, matches);
+			this.twitchChat(chatter, text);
+			return;
+		}
+		const matches = (chatter: YouTubeChatter): boolean => {
+			switch (speaker) {
+				case 'moderator':
+					return chatter.moderator === true;
+				case 'subscriber':
+					return chatter.member === true && !chatter.moderator;
+				default:
+					return !chatter.member && !chatter.moderator;
+			}
+		};
+		const chatter = speaker === 'broadcaster' ? YOUTUBE_OWNER : this.pickMatching(this.allowed('youtube', YOUTUBE_CHATTERS, (c) => c.channelId), YOUTUBE_CHATTERS, matches);
+		this.youtubeItem(chatter, { type: 'textMessageEvent', displayMessage: text });
+	}
+
+	/** A chatter from `free` that matches, else any that matches, else anyone free. */
+	private pickMatching<T>(free: readonly T[], all: readonly T[], matches: (chatter: T) => boolean): T {
+		const candidates = free.filter(matches);
+		return this.pick(candidates.length > 0 ? candidates : all.some(matches) ? all.filter(matches) : free);
 	}
 
 	/** Produces one requested event immediately. */

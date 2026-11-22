@@ -108,6 +108,16 @@
         "title": "Simulate Chat Event…",
         "category": "Caerwyn",
         "icon": "$(beaker)"
+      },
+      {
+        "command": "caerwyn.toggleChatControls",
+        "title": "Pause or Resume Chat Controls",
+        "category": "Caerwyn"
+      },
+      {
+        "command": "caerwyn.simulateChatCommand",
+        "title": "Simulate Chat Command…",
+        "category": "Caerwyn"
       }
     ],
     "menus": {
@@ -183,6 +193,64 @@
             "Poll for new messages every few seconds. Uses quota on every poll; only for when streaming does not work."
           ],
           "description": "How YouTube live chat is read."
+        },
+        "caerwyn.controls.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Let viewers in your own chat run commands, such as `!theme`, that change your editor. Only your own Twitch channel and YouTube broadcast, added with **Sign In**, are listened to: never a chat you only read. A status bar item shows when controls are on; click it, or run **Caerwyn: Pause or Resume Chat Controls**, to stop them at once."
+        },
+        "caerwyn.controls.delaySeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 60,
+          "scope": "application",
+          "markdownDescription": "How long to hold a viewer's command before carrying it out, so a moderator can delete the message first. A deleted message, or a viewer timed out or banned, cancels it. Your own commands and your moderators' run at once."
+        },
+        "caerwyn.controls.commands": {
+          "type": "object",
+          "default": {},
+          "scope": "application",
+          "markdownDescription": "Changes to each chat command's defaults, by command name without the `!`. For example `{ \"theme\": { \"allowed\": \"subscriber\", \"cooldownSeconds\": 120 } }`.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Set to false to switch this command off."
+              },
+              "allowed": {
+                "type": "string",
+                "enum": [
+                  "everyone",
+                  "subscriber",
+                  "vip",
+                  "moderator",
+                  "broadcaster"
+                ],
+                "enumDescriptions": [
+                  "Anyone in chat.",
+                  "Subscribers (YouTube members) and above.",
+                  "VIPs and above.",
+                  "Moderators and you.",
+                  "Only you."
+                ],
+                "description": "Who may use this command. Each level includes those above it."
+              },
+              "cooldownSeconds": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Seconds after anyone uses the command before anyone can use it again. You are never held back."
+              },
+              "userCooldownSeconds": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Seconds after a viewer uses the command before that viewer can use it again."
+              }
+            }
+          }
         },
         "caerwyn.simulation.enabled": {
           "type": "boolean",

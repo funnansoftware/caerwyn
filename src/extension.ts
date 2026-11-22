@@ -5,10 +5,19 @@ import { SignInPlatform, signIn, signOut } from './auth/signIn';
 import { TwitchOAuth, validateTwitchToken } from './auth/twitchOAuth';
 import { ChatService } from './chat/chatService';
 import { ChatHistory } from './chat/history';
-import { SIMULATED_ACTIONS, SIMULATED_EVENTS, SimulatedEventKind, isSimulatedEventKind } from './chat/simulation/simulatedChat';
-import { Account, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, youtubeVideoSource } from './chat/types';
+import {
+	SIMULATED_ACTIONS,
+	SIMULATED_EVENTS,
+	SIMULATED_SPEAKERS,
+	SimulatedEventKind,
+	SimulatedSpeaker,
+	isSimulatedEventKind,
+} from './chat/simulation/simulatedChat';
+import { Account, Platform, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, youtubeVideoSource } from './chat/types';
 import { parseVideoId } from './chat/youtube/videoId';
 import { YouTubeTransport } from './chat/youtube/youtubeChat';
+import { ChatCommand, ChatControls, CommandSettings, parseCommandText } from './controls/chatControls';
+import { ControlsStatusBar } from './controls/controlsStatusBar';
 import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
 import { CHAT_SIDEBAR_VIEW_ID, ChatSidebar } from './panel/chatSidebar';
 import { ChatWebview } from './panel/chatWebview';
@@ -107,6 +116,21 @@ export function activate(context: vscode.ExtensionContext) {
 					enabled: config.get<boolean>('simulation.enabled', false),
 					messagesPerSecond: config.get<number>('simulation.messagesPerSecond', 2),
 				},
+			};
+		},
+		log,
+	});
+
+	const controls = new ChatControls({
+		onEvents: service.onEvents,
+		isOwnSource: (sourceId) => service.isOwnSource(sourceId),
+		state: context.globalState,
+		getConfig: () => {
+			const config = vscode.workspace.getConfiguration('caerwyn.controls');
+			return {
+				enabled: config.get<boolean>('enabled', false),
+				delaySeconds: config.get<number>('delaySeconds', 5),
+				commands: config.get<Record<string, CommandSettings>>('commands', {}),
 			};
 		},
 		log,
@@ -211,6 +235,78 @@ export function activate(context: vscode.ExtensionContext) {
 		service.simulate(kind);
 	};
 
+	const offerControlsSettings = async () => {
+		const answer = await vscode.window.showInformationMessage(
+			'Chat controls are switched off. Switch on caerwyn.controls.enabled to let your chat run commands.',
+			'Open Settings',
+		);
+		if (answer === 'Open Settings') {
+			await vscode.commands.executeCommand('workbench.action.openSettings', 'caerwyn.controls');
+		}
+	};
+
+	const toggleChatControls = async () => {
+		if (!controls.enabled) {
+			await offerControlsSettings();
+			return;
+		}
+		await controls.setPaused(!controls.paused);
+	};
+
+	const SPEAKER_LABELS: Record<SimulatedSpeaker, string> = {
+		viewer: 'viewer',
+		subscriber: 'subscriber',
+		vip: 'VIP',
+		moderator: 'moderator',
+		broadcaster: 'broadcaster',
+	};
+
+	/** Sends a typed message, usually a chat command, as a simulated chatter. Arguments let tests skip the prompts. */
+	const simulateChatCommand = async (text?: unknown, platform?: unknown, speaker?: unknown) => {
+		let message = typeof text === 'string' ? text : undefined;
+		message ??= await vscode.window.showInputBox({
+			title: 'Simulate Chat Command',
+			prompt: 'What the simulated chatter types',
+			value: '!',
+			valueSelection: [1, 1],
+		});
+		if (!message?.trim()) {
+			return;
+		}
+		let from: { platform: Platform; speaker: SimulatedSpeaker } | undefined =
+			(platform === 'twitch' || platform === 'youtube') && SIMULATED_SPEAKERS.includes(speaker as SimulatedSpeaker)
+				? { platform, speaker: speaker as SimulatedSpeaker }
+				: undefined;
+		if (!from) {
+			const choices = (['twitch', 'youtube'] as const).flatMap((p) =>
+				SIMULATED_SPEAKERS.filter((s) => p === 'twitch' || s !== 'vip').map((s) => ({
+					label: `${p === 'twitch' ? 'Twitch' : 'YouTube'} ${p === 'youtube' && s === 'subscriber' ? 'member' : SPEAKER_LABELS[s]}`,
+					from: { platform: p, speaker: s },
+				})),
+			);
+			from = (await vscode.window.showQuickPick(choices, { title: 'Simulate Chat Command: sent by' }))?.from;
+		}
+		if (!from) {
+			return;
+		}
+		if (!service.isSimulating) {
+			await setSimulation(true);
+		}
+		showChat();
+		service.simulateMessage(from.platform, from.speaker, message);
+		// Chat controls are quiet about commands they do not know, as other bots' commands are everywhere. Here the
+		// user is trying one on purpose, so say why nothing happens.
+		const parsed = parseCommandText(message);
+		if (!controls.enabled) {
+			void offerControlsSettings();
+		} else if (parsed && !controls.isRegistered(parsed.name)) {
+			const names = controls.registered.map((command) => `!${command.name}`).join(', ');
+			void vscode.window.showInformationMessage(
+				`!${parsed.name} is not a chat command. ${names ? `Available: ${names}.` : 'No chat commands are available yet.'}`,
+			);
+		}
+	};
+
 	const clearHistory = async () => {
 		const answer = await vscode.window.showWarningMessage(
 			'Delete every chat message Caerwyn has saved for user cards? Chat already on screen stays.',
@@ -225,6 +321,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		output,
+		// Before the service, so no command waiting out its delay runs once chat is gone.
+		new ControlsStatusBar(controls, service),
+		{ dispose: () => controls.dispose() },
 		{ dispose: () => service.dispose() },
 		// After the service, so the last messages it handled are saved.
 		history,
@@ -243,12 +342,17 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('caerwyn.clearHistory', clearHistory),
 		vscode.commands.registerCommand('caerwyn.toggleSimulation', () => setSimulation(!service.isSimulating)),
 		vscode.commands.registerCommand('caerwyn.simulateEvent', simulateEvent),
+		vscode.commands.registerCommand('caerwyn.toggleChatControls', toggleChatControls),
+		vscode.commands.registerCommand('caerwyn.simulateChatCommand', simulateChatCommand),
 		vscode.workspace.onDidChangeConfiguration((event) => {
 			if (event.affectsConfiguration('caerwyn.youtube.transport')) {
 				service.reconnect();
 			}
 			if (event.affectsConfiguration('caerwyn.simulation')) {
 				service.refreshConfig();
+			}
+			if (event.affectsConfiguration('caerwyn.controls')) {
+				controls.refreshConfig();
 			}
 		}),
 		// Lets VS Code restore the chat tab, and the layout it was part of, after a restart.
@@ -257,8 +361,12 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 	);
 
-	// Exposed for the extension tests, which cannot otherwise see inside the webview.
-	return { chatViewReadyCount: () => ChatWebview.readyCount };
+	// Exposed for the extension tests, which cannot otherwise see inside the webview or the chat controls.
+	return {
+		chatViewReadyCount: () => ChatWebview.readyCount,
+		registerChatCommand: (command: ChatCommand) => controls.register(command),
+		chatControlsPaused: () => controls.paused,
+	};
 }
 
 export function deactivate() {}

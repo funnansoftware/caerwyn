@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import type { ChatCommand } from '../controls/chatControls';
 import { delay, waitFor } from './helpers';
 
 suite('Extension', () => {
@@ -64,6 +65,51 @@ suite('Extension', () => {
 		await vscode.window.tabGroups.close(chatTabs());
 		await waitFor(() => chatTabs().length === 0, 'the chat tab to close');
 		await vscode.commands.executeCommand('workbench.action.closeSidebar');
+	});
+
+	test('a simulated chat command runs through chat controls, and pausing stops the next one', async () => {
+		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as {
+			registerChatCommand(command: ChatCommand): vscode.Disposable;
+			chatControlsPaused(): boolean;
+		};
+		const config = () => vscode.workspace.getConfiguration('caerwyn');
+		const runs: string[] = [];
+		const registration = api.registerChatCommand({
+			name: 'e2e-test',
+			description: 'records its arguments',
+			defaults: { allowed: 'broadcaster', cooldownSeconds: 0, userCooldownSeconds: 0 },
+			run: (invocation) => {
+				runs.push(invocation.args);
+			},
+		});
+		try {
+			assert.strictEqual(api.chatControlsPaused(), false);
+			await config().update('controls.enabled', true, vscode.ConfigurationTarget.Global);
+			await config().update('simulation.messagesPerSecond', 0, vscode.ConfigurationTarget.Global);
+
+			await vscode.commands.executeCommand('caerwyn.simulateChatCommand', '!e2e-test one', 'twitch', 'broadcaster');
+			await waitFor(() => runs.length === 1, 'the simulated command to run');
+			assert.deepStrictEqual(runs, ['one']);
+
+			await vscode.commands.executeCommand('caerwyn.toggleChatControls');
+			assert.strictEqual(api.chatControlsPaused(), true);
+			await vscode.commands.executeCommand('caerwyn.simulateChatCommand', '!e2e-test two', 'twitch', 'broadcaster');
+			await delay(300);
+			assert.deepStrictEqual(runs, ['one'], 'nothing runs while paused');
+
+			await vscode.commands.executeCommand('caerwyn.toggleChatControls');
+			assert.strictEqual(api.chatControlsPaused(), false);
+		} finally {
+			registration.dispose();
+			if (api.chatControlsPaused()) {
+				await vscode.commands.executeCommand('caerwyn.toggleChatControls');
+			}
+			await config().update('controls.enabled', undefined, vscode.ConfigurationTarget.Global);
+			await config().update('simulation.messagesPerSecond', undefined, vscode.ConfigurationTarget.Global);
+			await resetSimulation();
+			await vscode.window.tabGroups.close(chatTabs());
+			await waitFor(() => chatTabs().length === 0, 'the chat tab to close');
+		}
 	});
 
 	test('simulating an event switches simulation on, opens the tab and marks it as simulated', async () => {

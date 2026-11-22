@@ -10,4 +10,5 @@ All notable changes to the "caerwyn" extension will be documented in this file.
 - Twitch messages sent with channel points or Bits Power-ups are marked, and in your own channel show what they cost. Sub emote unlocks, celebrations and custom Power-ups appear as rows of their own.
 - Messages AutoMod holds in your own Twitch channel appear with their reason, their text hidden until asked for, and Allow and Deny buttons.
 - The user card shows a viewer's full saved message history in that channel, grouped by day under sticky date headers, and loads older messages as you scroll up.
+- Chat controls, off by default: the groundwork for letting your own chat run commands that change the editor, with per-command permissions and cooldowns, a delay that lets moderators cancel a command, and a pause switch in the status bar.
 - Initial scaffold

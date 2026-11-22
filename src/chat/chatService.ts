@@ -1,7 +1,7 @@
 import { Disposable, Emitter } from '../util/emitter';
 import { ChatHistory, HistoryPage, HistoryQuery } from './history';
 import { ModerationError, ModerationRequest } from './moderation';
-import { SIMULATED_SOURCES, SimulatedChat, SimulatedEventKind, simulatedClearEvents } from './simulation/simulatedChat';
+import { SIMULATED_SOURCES, SimulatedChat, SimulatedEventKind, SimulatedSpeaker, simulatedClearEvents } from './simulation/simulatedChat';
 import { TwitchChat } from './twitch/twitchChat';
 import {
 	ChatAuth,
@@ -235,6 +235,20 @@ export class ChatService {
 		}
 		this.simulation.emit(kind);
 		return true;
+	}
+
+	/** Sends a typed message as a simulated chatter. Returns false when the simulation is not running. */
+	simulateMessage(platform: Platform, speaker: SimulatedSpeaker, text: string): boolean {
+		if (!this.simulation) {
+			return false;
+		}
+		this.simulation.say(platform, speaker, text);
+		return true;
+	}
+
+	/** Whether a source is the user's own chat (their channel or broadcast, or simulated chat), not one they only read. */
+	isOwnSource(sourceId: string): boolean {
+		return this.allSources.some((source) => source.id === sourceId && (source.kind === 'self' || source.kind === 'simulated'));
 	}
 
 	/**
