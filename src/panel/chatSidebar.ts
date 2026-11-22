@@ -35,7 +35,7 @@ export class ChatSidebar implements vscode.WebviewViewProvider {
 		this.view = view;
 		view.webview.options = chatWebviewOptions(this.context);
 		view.title = TITLE;
-		const chat = new ChatWebview(view.webview, this.context, this.service, (simulated) => {
+		const chat = new ChatWebview(view.webview, this.context, this.service, 'view', (simulated) => {
 			view.description = simulated ? 'Simulated' : undefined;
 		});
 		// The view is disposed when the user removes it; merely hiding it keeps chat flowing, like a background tab.

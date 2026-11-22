@@ -31,6 +31,8 @@ export class ChatWebview implements vscode.Disposable {
 		private readonly webview: vscode.Webview,
 		context: vscode.ExtensionContext,
 		private readonly service: ChatService,
+		/** Where the webview is shown. Views in a sidebar or panel sit on that surface's background, not the editor's. */
+		private readonly location: 'editor' | 'view',
 		/** Called when the chat shows or stops showing simulated sources, so the host can retitle itself. */
 		private readonly onSimulatedChanged: (simulated: boolean) => void,
 	) {
@@ -101,7 +103,7 @@ export class ChatWebview implements vscode.Disposable {
 	<link rel="stylesheet" href="${style}">
 	<title>Caerwyn Chat</title>
 </head>
-<body>
+<body class="${this.location}">
 	<div id="root"></div>
 	<script nonce="${nonce}" src="${script}"></script>
 </body>

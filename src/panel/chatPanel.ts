@@ -42,7 +42,7 @@ export class ChatPanel {
 		context: vscode.ExtensionContext,
 		service: ChatService,
 	) {
-		this.chat = new ChatWebview(panel.webview, context, service, (simulated) => {
+		this.chat = new ChatWebview(panel.webview, context, service, 'editor', (simulated) => {
 			panel.title = simulated ? 'Caerwyn Chat (Simulated)' : 'Caerwyn Chat';
 		});
 		this.disposable = panel.onDidDispose(() => this.dispose());

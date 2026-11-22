@@ -1,4 +1,4 @@
-/* Colours come from the active VS Code theme, so the chat tab matches light, dark and high-contrast themes. */
+/* Colours come from the active VS Code theme, so the chat matches light, dark and high-contrast themes and follows a theme change live. */
 
 html,
 body {
@@ -9,9 +9,15 @@ body {
 
 body {
 	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
+	color: var(--vscode-editor-foreground, var(--vscode-foreground));
 	font-family: var(--vscode-font-family);
 	font-size: var(--vscode-font-size);
+}
+
+/* In a sidebar or panel the view sits on that surface's own background, whichever theme or location it is in. */
+body.view {
+	background: transparent;
+	color: var(--vscode-foreground);
 }
 
 #root {
@@ -27,6 +33,20 @@ body {
 
 .youtube {
 	--platform: #ff0000;
+}
+
+/* High-contrast themes tell regions and controls apart by outline, not by fill. */
+
+.vscode-high-contrast .chip,
+.vscode-high-contrast button,
+.vscode-high-contrast .jump {
+	border-color: var(--vscode-contrastBorder, currentColor);
+}
+
+.vscode-high-contrast .msg:hover,
+.vscode-high-contrast .msg.notice {
+	outline: 1px dashed var(--vscode-contrastActiveBorder, var(--vscode-contrastBorder, currentColor));
+	outline-offset: -1px;
 }
 
 /* Sources bar */
