@@ -1,6 +1,8 @@
 import { ModerationAction, ModerationError } from '../moderation';
 import { TwitchChatEvent, mapChatMessage, mapNotification } from '../twitch/twitchMapper';
-import { ChatEvent, ChatSink, Platform, SimulatedSource } from '../types';
+import { mapBitsUse } from '../twitch/twitchSpend';
+import { AutomodEvent, mapAutomodHold, mapAutomodUpdate } from '../twitch/twitchAutomod';
+import { ChatEvent, ChatMessage, ChatSink, Platform, SimulatedSource } from '../types';
 import { YouTubeChatItem, mapYouTubeItem } from '../youtube/youtubeMapper';
 import {
 	CHAT_LINES,
@@ -51,6 +53,9 @@ export const SIMULATED_EVENTS = [
 	{ kind: 'youtubeOwner', label: 'YouTube: message from the channel owner' },
 	{ kind: 'longMessage', label: 'Long message' },
 	{ kind: 'twitchCheer', label: 'Twitch: cheer' },
+	{ kind: 'twitchHighlight', label: 'Twitch: message highlighted with channel points' },
+	{ kind: 'twitchCelebration', label: 'Twitch: on-screen celebration with Bits' },
+	{ kind: 'twitchAutomodHold', label: 'Twitch: message held by AutoMod' },
 	{ kind: 'twitchSub', label: 'Twitch: new subscription' },
 	{ kind: 'twitchResub', label: 'Twitch: resubscription with a message' },
 	{ kind: 'twitchGiftSub', label: 'Twitch: gifted subscription' },
@@ -93,6 +98,9 @@ const AUTOMATIC_MIX: [SimulatedEventKind, number][] = [
 	['youtubeOwner', 1],
 	['longMessage', 1.5],
 	['twitchCheer', 1],
+	['twitchHighlight', 0.5],
+	['twitchCelebration', 0.2],
+	['twitchAutomodHold', 0.2],
 	['twitchSub', 0.8],
 	['twitchResub', 1],
 	['twitchGiftSub', 0.6],
@@ -164,6 +172,8 @@ export class SimulatedChat {
 	private staged = false;
 	/** Users the view timed out or banned, by `<platform>:<user id>`, until when. They stop chatting until then. */
 	private readonly blocked = new Map<string, number>();
+	/** Messages AutoMod is holding, by key, waiting to be allowed or denied. */
+	private readonly held = new Map<string, { event: AutomodEvent; chatter: TwitchChatter; text: string }>();
 
 	constructor(private readonly options: SimulatedChatOptions) {
 		const seed = options.seed ?? Date.now();
@@ -196,6 +206,7 @@ export class SimulatedChat {
 	forget(): void {
 		this.recent.twitch = [];
 		this.recent.youtube = [];
+		this.held.clear();
 	}
 
 	/**
@@ -203,6 +214,22 @@ export class SimulatedChat {
 	 * as a chat event, and a timed-out or banned user stops chatting.
 	 */
 	moderate(platform: Platform, action: ModerationAction): void {
+		if (action.type === 'automod') {
+			const held = platform === 'twitch' ? this.held.get(action.messageKey) : undefined;
+			if (!held) {
+				throw new ModerationError('That message is no longer held.');
+			}
+			this.held.delete(action.messageKey);
+			const status = action.allow ? 'Approved' : 'Denied';
+			const update = mapAutomodUpdate({ ...held.event, status, moderator_user_name: TWITCH_BROADCASTER.name }, SIMULATED_TWITCH.id, this.now());
+			if (update) {
+				this.send({ type: 'update', message: update });
+			}
+			if (action.allow) {
+				this.twitchChat(held.chatter, held.text);
+			}
+			return;
+		}
 		if (action.type === 'delete') {
 			const prefix = `${platform}:`;
 			if (!action.messageKey.startsWith(prefix)) {
@@ -284,8 +311,61 @@ export class SimulatedChat {
 				this.twitchChat(this.twitchChatter(), this.pick(LONG_LINES));
 				break;
 			case 'twitchCheer': {
-				const bits = this.pick([1, 100, 500, 1000]);
+				const bits = this.pick([1, 100, 500, 1000, 5000, 10000]);
 				this.twitchChat(this.twitchChatter(), `Cheer${bits} ${this.line()}`, { cheer: { bits } });
+				break;
+			}
+			case 'twitchHighlight': {
+				// Twitch reports the cost separately, usually just after the message, so it arrives as an update.
+				const { event, message } = this.twitchChat(this.twitchChatter(), this.line(), { message_type: 'channel_points_highlighted' });
+				const spent = { amount: this.pick([300, 500, 1000]), currency: 'points' as const };
+				this.send({ type: 'update', message: mapChatMessage(event, SIMULATED_TWITCH.id, message.timestamp, spent) });
+				break;
+			}
+			case 'twitchAutomodHold': {
+				const chatter = this.twitchChatter();
+				const text = this.pick(['nobody asked, go touch grass', 'this stream is so bad lol', 'ur code looks like spaghetti']);
+				const event: AutomodEvent = {
+					broadcaster_user_id: TWITCH_CHANNEL_ID,
+					broadcaster_user_login: TWITCH_BROADCASTER.login,
+					broadcaster_user_name: TWITCH_BROADCASTER.name,
+					user_id: chatter.id,
+					user_login: chatter.login,
+					user_name: chatter.name,
+					message_id: this.nextId(),
+					message: { text, fragments: [{ type: 'text', text }] },
+					reason: 'automod',
+					automod: { category: 'bullying', level: this.int(1, 4) },
+					held_at: new Date(this.now()).toISOString(),
+				};
+				const message = mapAutomodHold(event, SIMULATED_TWITCH.id, this.now());
+				if (message) {
+					this.held.set(message.key, { event, chatter, text });
+					this.send({ type: 'message', message });
+				}
+				break;
+			}
+			case 'twitchCelebration': {
+				const chatter = this.twitchChatter();
+				const celebration = mapBitsUse(
+					{
+						broadcaster_user_id: TWITCH_CHANNEL_ID,
+						broadcaster_user_login: TWITCH_BROADCASTER.login,
+						broadcaster_user_name: TWITCH_BROADCASTER.name,
+						user_id: chatter.id,
+						user_login: chatter.login,
+						user_name: chatter.name,
+						bits: this.pick([100, 250, 500]),
+						type: 'power_up',
+						power_up: { type: 'celebration', emote: { id: '25', name: 'Kappa' } },
+					},
+					SIMULATED_TWITCH.id,
+					this.now(),
+					this.nextId(),
+				);
+				if (celebration?.kind === 'message') {
+					this.send({ type: 'message', message: celebration.message });
+				}
 				break;
 			}
 			case 'twitchSub': {
@@ -576,11 +656,13 @@ export class SimulatedChat {
 		};
 	}
 
-	private twitchChat(chatter: TwitchChatter, text: string, extra: Partial<TwitchChatEvent> = {}): void {
+	private twitchChat(chatter: TwitchChatter, text: string, extra: Partial<TwitchChatEvent> = {}): { event: TwitchChatEvent; message: ChatMessage } {
 		const event = this.twitchEvent(chatter, text, extra);
 		const plainText = text.replace(/\u0001(ACTION )?/g, '');
 		this.remember('twitch', { id: event.message_id, userId: chatter.id, name: chatter.name, text: plainText });
-		this.send({ type: 'message', message: mapChatMessage(event, SIMULATED_TWITCH.id, this.now()) });
+		const message = mapChatMessage(event, SIMULATED_TWITCH.id, this.now());
+		this.send({ type: 'message', message });
+		return { event, message };
 	}
 
 	private twitchNotice(chatter: TwitchChatter, noticeType: string, systemMessage: string, text?: string, extra: Partial<TwitchChatEvent> = {}): void {

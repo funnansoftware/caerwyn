@@ -41,6 +41,20 @@ export type Fragment =
 
 export type Role = 'broadcaster' | 'moderator' | 'vip' | 'subscriber' | 'verified';
 
+/** Where a message AutoMod held for review stands. */
+export type HeldState = 'held' | 'allowed' | 'denied' | 'expired';
+
+export interface HeldMessage {
+	/** The platform's ID for the held message, which allowing or denying it needs. */
+	messageId: string;
+	state: HeldState;
+	/**
+	 * What the viewer wrote. Kept apart from `ChatMessage.fragments` so that nothing shows it unless the reader
+	 * asks to: it is what AutoMod caught, and the chat may be on stream.
+	 */
+	fragments: Fragment[];
+}
+
 export interface ChatAuthor {
 	/** Platform user ID (Twitch user ID, YouTube channel ID). Needed later for moderation actions. */
 	id: string;
@@ -50,6 +64,12 @@ export interface ChatAuthor {
 	color?: string;
 	avatarUrl?: string;
 	roles: Role[];
+}
+
+/** What a viewer spent: Twitch channel points or Bits. `amount` is absent when the platform has not said how much. */
+export interface Spent {
+	currency: 'points' | 'bits';
+	amount?: number;
 }
 
 export interface ChatMessage {
@@ -68,6 +88,12 @@ export interface ChatMessage {
 	timestamp: number;
 	/** System text for non-plain messages: subscriptions, raids, Super Chats and so on. */
 	headline?: string;
+	/** What was spent on this message or reward, in order, each shown as its icon and amount after the headline. */
+	spent?: Spent[];
+	/** The viewer paid to make this message stand out, such as Twitch's "Highlight My Message". */
+	highlighted?: boolean;
+	/** Set on a message AutoMod held for review, rather than one in chat. */
+	held?: HeldMessage;
 	/** A `/me` style message. */
 	action?: boolean;
 	replyTo?: { name: string; text: string };
@@ -75,6 +101,8 @@ export interface ChatMessage {
 
 export type ChatEvent =
 	| { type: 'message'; message: ChatMessage }
+	/** A message already sent has changed, such as when what it cost arrives after it. Replaces it by `key`. */
+	| { type: 'update'; message: ChatMessage }
 	/** One message was removed by a moderator or its author. */
 	| { type: 'delete'; key: string }
 	/** All of one user's messages were removed (ban or timeout). */

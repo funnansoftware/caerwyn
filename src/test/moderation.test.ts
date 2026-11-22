@@ -13,6 +13,8 @@ suite('Moderation requests', () => {
 			{ sourceId: 'twitch:simulated', action: { type: 'delete', messageKey: 'twitch:abc' } },
 			{ sourceId: 'twitch:simulated', action: { type: 'ban', userId: 'u1' } },
 			{ sourceId: 'youtube:simulated', action: { type: 'timeout', userId: 'u1', durationSeconds: 600 } },
+			{ sourceId: 'twitch:me', action: { type: 'automod', messageKey: 'twitch:automod-abc', allow: true } },
+			{ sourceId: 'twitch:me', action: { type: 'automod', messageKey: 'twitch:automod-abc', allow: false } },
 		]) {
 			assert.deepStrictEqual(parseModerationRequest(request), request);
 		}
@@ -21,6 +23,12 @@ suite('Moderation requests', () => {
 	test('drops anything it does not expect', () => {
 		const extra = parseModerationRequest({ sourceId: 's', action: { type: 'ban', userId: 'u', durationSeconds: 5, note: 'x' }, more: 1 });
 		assert.deepStrictEqual(extra, { sourceId: 's', action: { type: 'ban', userId: 'u' } });
+	});
+
+	test('rejects an AutoMod decision that is not a plain yes or no', () => {
+		assert.strictEqual(parseModerationRequest({ sourceId: 's', action: { type: 'automod', messageKey: 'k', allow: 'yes' } }), undefined);
+		assert.strictEqual(parseModerationRequest({ sourceId: 's', action: { type: 'automod', messageKey: 'k' } }), undefined);
+		assert.strictEqual(parseModerationRequest({ sourceId: 's', action: { type: 'automod', allow: true } }), undefined);
 	});
 
 	test('rejects malformed requests', () => {

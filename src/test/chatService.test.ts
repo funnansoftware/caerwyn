@@ -251,6 +251,41 @@ suite('ChatService', () => {
 		assert.ok(!states().includes('connected'));
 	});
 
+	test('allowing or denying a held message uses the history\'s copy, and only while it is held', async () => {
+		maxMessages = 500;
+		simulation.enabled = true;
+		service.refreshConfig();
+		service.start();
+
+		service.simulate('twitchAutomodHold');
+		const held = service.messages[service.messages.length - 1];
+		assert.strictEqual(held.held?.state, 'held');
+		assert.deepStrictEqual(held.fragments, [], 'the held text is kept out of the ordinary fragments');
+		await assert.rejects(
+			service.moderate({ sourceId: 'youtube:simulated', action: { type: 'automod', messageKey: held.key, allow: true } }),
+			/no longer held/,
+			'a key from another chat is refused',
+		);
+
+		await service.moderate({ sourceId: held.sourceId, action: { type: 'automod', messageKey: held.key, allow: true } });
+		const after = service.messages.find((m) => m.key === held.key);
+		assert.strictEqual(after?.held?.state, 'allowed');
+		assert.match(after?.headline ?? '', /Allowed by/);
+		const allowed = service.messages[service.messages.length - 1];
+		assert.notStrictEqual(allowed.key, held.key, 'the allowed message arrives as chat of its own');
+		assert.deepStrictEqual(allowed.fragments, held.held?.fragments);
+
+		await assert.rejects(
+			service.moderate({ sourceId: held.sourceId, action: { type: 'automod', messageKey: held.key, allow: false } }),
+			/no longer held/,
+		);
+
+		service.simulate('twitchAutomodHold');
+		const denied = service.messages[service.messages.length - 1];
+		await service.moderate({ sourceId: denied.sourceId, action: { type: 'automod', messageKey: denied.key, allow: false } });
+		assert.strictEqual(service.messages[service.messages.length - 1].held?.state, 'denied', 'a denied message stays out of chat');
+	});
+
 	test('drops removed messages from history so they cannot be shown again', () => {
 		maxMessages = 10;
 		emit({ type: 'message', message: message('a', 'u1') });
@@ -265,6 +300,11 @@ suite('ChatService', () => {
 		emit({ type: 'message', message: message('e') });
 		emit({ type: 'clear', platform: 'twitch', channelId: 'c1' });
 		assert.deepStrictEqual(ids(), ['d']);
+
+		emit({ type: 'update', message: { ...message('d', 'u3', 'c2'), headline: 'Highlighted', spent: [{ currency: 'points', amount: 500 }] } });
+		assert.deepStrictEqual(service.messages[0].spent, [{ currency: 'points', amount: 500 }], 'an update replaces the message');
+		emit({ type: 'update', message: message('b', 'u2') });
+		assert.deepStrictEqual(ids(), ['d'], 'an update never brings back a removed message');
 
 		let resets = 0;
 		service.onReset(() => resets++);

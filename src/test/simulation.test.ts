@@ -13,7 +13,12 @@ function simulator(seed = 1, rate = 0) {
 
 const messages = (events: ChatEvent[]) => events.flatMap((event) => (event.type === 'message' ? [event.message] : []));
 /** Everything about a message except its ID, which is unique per run by design. */
-const content = (message: ChatMessage) => ({ ...message, key: '', id: '' });
+const content = (message: ChatMessage) => ({
+	...message,
+	key: '',
+	id: '',
+	...(message.held ? { held: { ...message.held, messageId: '' } } : {}),
+});
 
 suite('SimulatedChat', () => {
 	test('the showcase produces every kind of event, through the real mappers', () => {
@@ -38,6 +43,13 @@ suite('SimulatedChat', () => {
 		assert.deepStrictEqual(purgedUsers.sort(), ['sim-t99', 'sim-y99']);
 
 		assert.ok(all.some((m) => m.action), 'an action message');
+		assert.ok(all.some((m) => m.highlighted), 'a highlighted message');
+		const update = sink.events.find((e) => e.type === 'update');
+		assert.ok(update?.type === 'update' && update.message.highlighted, 'the highlight\'s cost arrives as an update');
+		assert.strictEqual(update.message.headline, 'Highlighted');
+		assert.ok(update.message.spent?.[0].currency === 'points' && (update.message.spent[0].amount ?? 0) > 0, 'with how many points it cost');
+		assert.ok(all.some((m) => m.headline === 'Sent an on-screen celebration' && m.spent?.[0].currency === 'bits'), 'a celebration');
+		assert.ok(all.some((m) => m.held?.state === 'held' && m.fragments.length === 0 && m.held.fragments.length > 0), 'a held message');
 		assert.ok(all.some((m) => m.replyTo), 'a reply');
 		assert.ok(all.some((m) => m.fragments.some((f) => f.type === 'mention')), 'a mention');
 		assert.ok(all.some((m) => m.author.roles.includes('broadcaster') && m.platform === 'twitch'));

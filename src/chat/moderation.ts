@@ -10,7 +10,9 @@ export type ModerationAction =
 	/** Stops a user chatting for a while and removes their messages. */
 	| { type: 'timeout'; userId: string; durationSeconds: number }
 	/** Stops a user chatting until unbanned and removes their messages. */
-	| { type: 'ban'; userId: string };
+	| { type: 'ban'; userId: string }
+	/** Lets a message AutoMod held into chat, or keeps it out. */
+	| { type: 'automod'; messageKey: string; allow: boolean };
 
 export interface ModerationRequest {
 	/** The chat source the target message came from. */
@@ -39,12 +41,16 @@ export function parseModerationRequest(value: unknown): ModerationRequest | unde
 	if (!isId(sourceId) || typeof action !== 'object' || action === null) {
 		return undefined;
 	}
-	const a = action as { type?: unknown; messageKey?: unknown; userId?: unknown; durationSeconds?: unknown };
+	const a = action as { type?: unknown; messageKey?: unknown; userId?: unknown; durationSeconds?: unknown; allow?: unknown };
 	switch (a.type) {
 		case 'delete':
 			return isId(a.messageKey) ? { sourceId, action: { type: 'delete', messageKey: a.messageKey } } : undefined;
 		case 'ban':
 			return isId(a.userId) ? { sourceId, action: { type: 'ban', userId: a.userId } } : undefined;
+		case 'automod':
+			return isId(a.messageKey) && typeof a.allow === 'boolean'
+				? { sourceId, action: { type: 'automod', messageKey: a.messageKey, allow: a.allow } }
+				: undefined;
 		case 'timeout': {
 			const seconds = a.durationSeconds;
 			if (!isId(a.userId) || typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 1 || seconds > MAX_TIMEOUT_SECONDS) {

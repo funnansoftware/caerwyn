@@ -1,7 +1,7 @@
 import { formatDuration, type ModerationAction } from '../chat/moderation';
 import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, Platform, Role, SourceInfo, ViewerCounts } from '../chat/types';
 import type { HostMessage, ViewAction, ViewSettings, WebviewMessage } from '../panel/protocol';
-import { platformLogo } from './logos';
+import { currencyIcon, platformLogo } from './logos';
 
 // The chat tab's renderer. It holds no state of its own beyond the DOM: the extension host sends the
 // recent history on `ready` and then a stream of events.
@@ -192,7 +192,12 @@ function renderMessage(message: ChatMessage): HTMLElement {
 	row.dataset.user = message.author.id;
 	if (message.headline) {
 		row.classList.add('notice');
-		row.append(el('div', 'headline', message.headline));
+		const headline = el('div', 'headline', message.headline);
+		appendSpent(headline, message);
+		row.append(headline);
+	}
+	if (message.highlighted) {
+		row.classList.add('highlighted');
 	}
 	if (message.action) {
 		row.classList.add('action-message');
@@ -221,16 +226,117 @@ function renderMessage(message: ChatMessage): HTMLElement {
 
 	const body = el('span', 'body');
 	renderFragments(body, message.fragments);
+	if (message.held) {
+		renderHeldBody(body, message.held);
+	}
 	if (body.childNodes.length > 0) {
 		line.append(el('span', 'separator', message.action ? ' ' : ': '), body);
 	}
 	row.append(line);
+	if (message.held) {
+		row.classList.add('held', `held-${message.held.state}`);
+		if (message.held.state === 'held') {
+			row.append(renderHeldActions(message));
+		}
+	}
 	return row;
+}
+
+/**
+ * What AutoMod caught stays hidden behind a button until the reader asks, in case the chat is on stream.
+ * Once allowed, it is in chat for everyone, so it is shown.
+ */
+function renderHeldBody(body: HTMLElement, held: NonNullable<ChatMessage['held']>): void {
+	if (held.state === 'allowed') {
+		renderFragments(body, held.fragments);
+		return;
+	}
+	const reveal = el('button', 'held-reveal', 'Show message');
+	reveal.type = 'button';
+	reveal.addEventListener('click', (event) => {
+		event.stopPropagation();
+		const text = el('span', 'held-text');
+		renderFragments(text, held.fragments);
+		reveal.replaceWith(text);
+	});
+	body.append(reveal);
+}
+
+/** Held messages waiting on Allow or Deny, by request ID, so the result reaches the right row. */
+const heldRequests = new Map<number, { key: string; allow: boolean }>();
+
+function renderHeldActions(message: ChatMessage): HTMLElement {
+	const actions = el('div', 'held-actions');
+	const status = el('span', 'held-status');
+	status.setAttribute('aria-live', 'polite');
+	const decide = (allow: boolean) => {
+		const requestId = nextRequestId++;
+		heldRequests.set(requestId, { key: message.key, allow });
+		allowButton.disabled = true;
+		denyButton.disabled = true;
+		status.classList.remove('error');
+		status.textContent = allow ? 'Allowing…' : 'Denying…';
+		vscode.postMessage({ type: 'moderate', requestId, request: { sourceId: message.sourceId, action: { type: 'automod', messageKey: message.key, allow } } });
+	};
+	const allowButton = el('button', 'held-allow', 'Allow');
+	allowButton.type = 'button';
+	allowButton.addEventListener('click', () => decide(true));
+	const denyButton = el('button', 'held-deny', 'Deny');
+	denyButton.type = 'button';
+	denyButton.addEventListener('click', () => decide(false));
+	actions.append(allowButton, denyButton, status);
+	return actions;
+}
+
+/** A held message's Allow or Deny came back. On success the row changes when the platform reports the outcome. */
+function onHeldResult({ key, allow }: { key: string; allow: boolean }, error: string | undefined): void {
+	const row = rows.get(key);
+	const status = row?.querySelector<HTMLElement>('.held-status');
+	if (!row || !status) {
+		return;
+	}
+	if (error) {
+		status.textContent = error;
+		status.classList.add('error');
+		row.querySelectorAll<HTMLButtonElement>('.held-actions button').forEach((button) => (button.disabled = false));
+	} else {
+		// Twitch has done it. Its own report of the outcome then redraws the row.
+		status.textContent = allow ? 'Allowed.' : 'Denied.';
+	}
+}
+
+/** Twitch colours a Bits gem by how many Bits it stands for: from 1, 100, 1,000, 5,000 and 10,000 up. */
+const BITS_TIERS = [10_000, 5_000, 1_000, 100, 1];
+
+function bitsTier(amount: number): number {
+	return BITS_TIERS.find((tier) => amount >= tier) ?? 1;
+}
+
+/** Each currency's icon and how much was spent, after a headline. */
+function appendSpent(target: HTMLElement, message: ChatMessage): void {
+	for (const { currency, amount } of message.spent ?? []) {
+		const spent = el('span', `spent spent-${currency}`);
+		spent.setAttribute('role', 'img');
+		const unit = currency === 'bits' ? (amount === 1 ? 'Bit' : 'Bits') : amount === 1 ? 'channel point' : 'channel points';
+		const label = amount === undefined ? unit : `${exactCount.format(amount)} ${unit}`;
+		spent.setAttribute('aria-label', label);
+		spent.title = label;
+		const icon = currencyIcon(currency);
+		if (currency === 'bits' && amount !== undefined) {
+			icon.classList.add(`bits-tier-${bitsTier(amount)}`);
+		}
+		spent.append(icon);
+		if (amount !== undefined) {
+			spent.append(el('span', 'spent-amount', exactCount.format(amount)));
+		}
+		target.append(' ', spent);
+	}
 }
 
 function markDeleted(row: HTMLElement): void {
 	row.classList.add('deleted');
 	row.querySelector('.reply')?.remove();
+	row.querySelector('.held-actions')?.remove();
 	const body = row.querySelector('.body');
 	if (body) {
 		body.textContent = 'message deleted';
@@ -339,6 +445,22 @@ function applyEvents(events: ChatEvent[]): void {
 			const row = rows.get(event.key);
 			if (row) {
 				markDeleted(row);
+			}
+			continue;
+		}
+		if (event.type === 'update') {
+			const { key } = event.message;
+			const row = rows.get(key);
+			// A removed message stays removed.
+			if (row && !row.classList.contains('deleted')) {
+				const updated = renderMessage(event.message);
+				row.replaceWith(updated);
+				if (cardOpener && row.contains(cardOpener)) {
+					// Closing the card returns focus to the name, so point it at the new row's.
+					cardOpener = updated.querySelector<HTMLElement>('.author') ?? undefined;
+				}
+				rows.set(key, updated);
+				shown.set(key, event.message);
 			}
 			continue;
 		}
@@ -764,6 +886,12 @@ function moderate(target: CardTarget, action: ModerationAction, done: string): v
 }
 
 function onModerationResult(requestId: number, error: string | undefined): void {
+	const held = heldRequests.get(requestId);
+	if (held) {
+		heldRequests.delete(requestId);
+		onHeldResult(held, error);
+		return;
+	}
 	const request = pendingRequests.get(requestId);
 	if (!request) {
 		return;
@@ -807,7 +935,9 @@ function renderHistory(target: CardTarget, allowed: boolean, busy: boolean): voi
 			body.textContent = 'message deleted';
 		} else {
 			if (message.headline) {
-				body.append(el('span', 'history-headline', message.headline), ' ');
+				const headline = el('span', 'history-headline', message.headline);
+				appendSpent(headline, message);
+				body.append(headline, ' ');
 			}
 			renderFragments(body, message.fragments);
 		}

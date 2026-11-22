@@ -4,7 +4,7 @@ Live Stream Multi-Chat VSCode Extension
 
 Caerwyn shows your Twitch and YouTube live chat together in one VS Code editor tab. Because it is an ordinary tab, you can split it, drag it into any editor group and keep it in your layouts.
 
-This version is read-only. It shows messages, emotes, replies, subscriptions, Super Chats and other notices, and it removes messages that moderators delete.
+This version is for reading chat. It shows messages, emotes, replies, subscriptions, Super Chats and other notices, and it removes messages that moderators delete. The one thing it can do on Twitch is allow or deny the messages AutoMod holds in your own channel.
 
 ## Setup
 
@@ -17,6 +17,10 @@ Caerwyn signs in to each platform with OAuth. Each platform requires you to regi
 3. If Twitch offers a client type, choose **Public**. Caerwyn does not use a client secret, and Twitch only lets public clients renew a sign-in without one.
 4. Copy the application's **Client ID**.
 5. In VS Code, run **Caerwyn: Sign In to Twitch**, paste the Client ID and approve access in the browser.
+
+Caerwyn asks to read your chat, your channel points redemptions and the Bits spent in your channel, and to manage AutoMod's held messages. The redemptions and Bits show what viewers paid for highlighted messages, Power-ups and other rewards in your own channel; Twitch shares them with nobody else. Managing held messages shows you what AutoMod is holding in your channel, with **Allow** and **Deny** buttons. It is the only thing Caerwyn changes on Twitch, and only when you click one of them. A held message's text stays hidden until you click **Show message**, so it does not appear on stream by accident.
+
+If you signed in before Caerwyn asked for all of these, your chat still works, but run **Caerwyn: Sign In to Twitch** again to get the rest.
 
 ### YouTube
 

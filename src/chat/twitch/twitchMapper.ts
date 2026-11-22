@@ -1,4 +1,4 @@
-import { ChatAuthor, ChatMessage, Fragment, Role } from '../types';
+import { ChatAuthor, ChatMessage, Fragment, Role, Spent } from '../types';
 
 // Pure mapping from EventSub chat event payloads to the platform-neutral model.
 // Field names follow https://dev.twitch.tv/docs/eventsub/reference/chat
@@ -28,6 +28,8 @@ export interface TwitchChatEvent {
 	chatter_is_anonymous?: boolean;
 	message_id: string;
 	message?: TwitchMessageBody;
+	/** How the message was sent: plain `text`, or with channel points, Bits Power-ups and the like. */
+	message_type?: string;
 	color?: string;
 	badges?: TwitchBadge[];
 	cheer?: { bits?: number } | null;
@@ -46,7 +48,35 @@ const BADGE_ROLES: Record<string, Role> = {
 	partner: 'verified',
 };
 
-const EMOTE_ID = /^[A-Za-z0-9_-]+$/;
+/** What a viewer paid for something, from a channel points redemption or a Bits event. */
+export interface Cost {
+	amount: number;
+	currency: Spent['currency'];
+}
+
+/** `message_type`s that cost channel points or Bits, and so may have a matching redemption or Bits event. */
+export type PaidMessageType =
+	| 'channel_points_highlighted'
+	| 'channel_points_sub_only'
+	| 'power_ups_message_effect'
+	| 'power_ups_gigantified_emote';
+
+// What to say about a message sent in a special way, by `message_type`, and what it is paid with, if anything.
+// The view shows what was paid as an icon and amount after the label.
+// A Map, so a `message_type` such as `constructor` cannot reach `Object.prototype`.
+const MESSAGE_TYPES = new Map<string, { label: string; paidWith?: Spent['currency'] }>([
+	['channel_points_highlighted', { label: 'Highlighted', paidWith: 'points' }],
+	['channel_points_sub_only', { label: 'Sent in sub-only mode', paidWith: 'points' }],
+	['user_intro', { label: 'First time in chat' }],
+	['power_ups_message_effect', { label: 'Sent with a message effect', paidWith: 'bits' }],
+	['power_ups_gigantified_emote', { label: 'Gigantified an emote', paidWith: 'bits' }],
+]);
+
+export function isPaidMessageType(type: string | undefined): type is PaidMessageType {
+	return type !== undefined && MESSAGE_TYPES.get(type)?.paidWith !== undefined;
+}
+
+export const EMOTE_ID = /^[A-Za-z0-9_-]+$/;
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 const ACTION_PREFIX = '\u0001ACTION ';
 
@@ -88,7 +118,7 @@ export function stripAction(fragments: Fragment[]): boolean {
 	return true;
 }
 
-function mapAuthor(event: TwitchChatEvent): ChatAuthor {
+export function mapAuthor(event: TwitchChatEvent): ChatAuthor {
 	const roles = new Set<Role>();
 	for (const badge of event.badges ?? []) {
 		const role = badge.set_id ? BADGE_ROLES[badge.set_id] : undefined;
@@ -123,12 +153,32 @@ function base(event: TwitchChatEvent, sourceId: string, timestamp: number): Chat
 	};
 }
 
-/** Maps a `channel.chat.message` event. */
-export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timestamp: number): ChatMessage {
+/** Maps a `channel.chat.message` event. `cost` is what the viewer paid, when a matching redemption or Bits event says. */
+export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timestamp: number, cost?: Cost): ChatMessage {
 	const message = base(event, sourceId, timestamp);
+	const headlines: string[] = [];
+	const spent: Spent[] = [];
 	const bits = event.cheer?.bits;
 	if (bits) {
-		message.headline = `Cheered ${bits} ${bits === 1 ? 'bit' : 'bits'}`;
+		headlines.push('Cheered');
+		spent.push({ currency: 'bits', amount: bits });
+	}
+	const type = MESSAGE_TYPES.get(event.message_type ?? '');
+	if (type) {
+		headlines.push(type.label);
+	}
+	if (type?.paidWith) {
+		// The icon shows even before the amount is known, and in channels where it never will be.
+		spent.push(cost?.currency === type.paidWith ? { currency: cost.currency, amount: cost.amount } : { currency: type.paidWith });
+	}
+	if (headlines.length > 0) {
+		message.headline = headlines.join(' · ');
+	}
+	if (spent.length > 0) {
+		message.spent = spent;
+	}
+	if (event.message_type === 'channel_points_highlighted') {
+		message.highlighted = true;
 	}
 	if (event.reply?.parent_user_name) {
 		message.replyTo = { name: event.reply.parent_user_name, text: event.reply.parent_message_body ?? '' };

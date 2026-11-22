@@ -30,6 +30,33 @@ const LOGOS: Record<Platform, Layer[]> = {
 	],
 };
 
+// Twitch's currency marks, drawn here after its default icons in the text colour, so they follow the theme.
+// Decorative: callers label the element they sit in.
+const CURRENCY_ICONS: Record<'points' | 'bits', { d: string; opacity?: number }[]> = {
+	// A ring with an arc in its upper right quarter.
+	points: [{ d: 'M10 2a8 8 0 1 0 0 16a8 8 0 1 0 0-16zm0 2a6 6 0 1 1 0 12a6 6 0 1 1 0-12z' }, { d: 'M10 6a4 4 0 0 1 4 4h-2a2 2 0 0 0-2-2z' }],
+	// A gem: a lighter upper facet over a solid lower one.
+	bits: [{ d: 'M10 2L17 12H3z', opacity: 0.6 }, { d: 'M3 12L10 18L17 12z' }],
+};
+
+export function currencyIcon(currency: 'points' | 'bits'): SVGSVGElement {
+	const svg = document.createElementNS(SVG_NS, 'svg');
+	svg.setAttribute('viewBox', '0 0 20 20');
+	svg.setAttribute('aria-hidden', 'true');
+	svg.setAttribute('focusable', 'false');
+	svg.classList.add('spent-icon');
+	for (const { d, opacity } of CURRENCY_ICONS[currency]) {
+		const path = document.createElementNS(SVG_NS, 'path');
+		path.setAttribute('d', d);
+		path.setAttribute('fill-rule', 'evenodd');
+		if (opacity !== undefined) {
+			path.setAttribute('fill-opacity', String(opacity));
+		}
+		svg.append(path);
+	}
+	return svg;
+}
+
 /** The platform's logo in its brand colours. Decorative: callers label the element it sits in. */
 export function platformLogo(platform: Platform): SVGSVGElement {
 	const svg = document.createElementNS(SVG_NS, 'svg');

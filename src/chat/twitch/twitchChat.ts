@@ -1,20 +1,36 @@
 import { WebSocket } from 'ws';
 import { backoffMs } from '../../util/emitter';
 import { Account, ChatAuth, ChatSink, NotSignedInError, SourceStatus, TwitchSource } from '../types';
-import { TwitchChatEvent, mapChatMessage, mapNotification } from './twitchMapper';
+import { TwitchChatEvent, mapNotification } from './twitchMapper';
+import { AutomaticRedemptionEvent, BitsUseEvent, SpendMatcher, SpendResult, mapAutomaticRedemption, mapBitsUse } from './twitchSpend';
+import { AutomodEvent, mapAutomodHold, mapAutomodUpdate } from './twitchAutomod';
+import { ModerationError } from '../moderation';
 
 // Reads Twitch chat through EventSub over WebSocket, the transport Twitch recommends.
 // Protocol: https://dev.twitch.tv/docs/eventsub/handling-websocket-events/
 
 const DEFAULT_WS_URL = 'wss://eventsub.wss.twitch.tv/ws';
 const DEFAULT_HELIX_URL = 'https://api.twitch.tv/helix';
-const SUBSCRIPTION_TYPES = [
+/** What chat needs, in every channel. Reading chat as the signed-in user, so the condition names them too. */
+const CHAT_SUBSCRIPTIONS = [
 	'channel.chat.message',
 	'channel.chat.notification',
 	'channel.chat.message_delete',
 	'channel.chat.clear_user_messages',
 	'channel.chat.clear',
 ];
+/**
+ * In the signed-in user's own channel only: what viewers spent, which Twitch shows to nobody else, and the messages
+ * AutoMod holds for review. Chat works without these, so a refusal (such as a sign-in from before they were added)
+ * is logged, not fatal. `moderator` subscriptions name the user as the moderator in their condition.
+ */
+const OWN_CHANNEL_SUBSCRIPTIONS: { type: string; version: string; moderator?: boolean }[] = [
+	{ type: 'channel.channel_points_automatic_reward_redemption.add', version: '2' },
+	{ type: 'channel.bits.use', version: '1' },
+	{ type: 'automod.message.hold', version: '2', moderator: true },
+	{ type: 'automod.message.update', version: '2', moderator: true },
+];
+const OWN_CHANNEL_TYPES = new Set(OWN_CHANNEL_SUBSCRIPTIONS.map((subscription) => subscription.type));
 const VALIDATE_INTERVAL_MS = 60 * 60 * 1000;
 /** How long past the keepalive interval to wait before treating the connection as dead. */
 const WATCHDOG_GRACE_MS = 10_000;
@@ -48,7 +64,7 @@ interface EventSubMessage {
 	metadata?: { message_id?: string; message_type?: string; message_timestamp?: string; subscription_type?: string };
 	payload?: {
 		session?: { id?: string; keepalive_timeout_seconds?: number | null; reconnect_url?: string | null };
-		subscription?: { status?: string; condition?: { broadcaster_user_id?: string } };
+		subscription?: { type?: string; status?: string; condition?: { broadcaster_user_id?: string } };
 		event?: TwitchChatEvent & { target_user_id?: string };
 	};
 }
@@ -77,6 +93,7 @@ export class TwitchChat {
 	private viewerFailure: string | undefined;
 	private viewerFailures = 0;
 	private readonly seen = new Set<string>();
+	private readonly spending = new SpendMatcher();
 
 	constructor(private readonly options: TwitchChatOptions) {
 		this.keepaliveMs = (options.keepaliveSeconds ?? 30) * 1000;
@@ -321,15 +338,20 @@ export class TwitchChat {
 		await Promise.all(
 			[...this.channels.values()].map(async (channel) => {
 				try {
-					const results = await Promise.all(
-						SUBSCRIPTION_TYPES.map((type) => this.subscribe(type, channel, sessionId)),
-					);
+					const [results, spendNote] = await Promise.all([
+						Promise.all(
+							CHAT_SUBSCRIPTIONS.map((type) =>
+								this.subscribe(type, '1', { broadcaster_user_id: channel.broadcasterId, user_id: this.userId }, sessionId),
+							),
+						),
+						channel.broadcasterId === this.userId ? this.subscribeOwnChannel(channel, sessionId) : undefined,
+					]);
 					const failure = results.find((result) => result !== undefined);
 					if (failure) {
-						this.status(channel.source.id, { state: 'error', detail: failure });
+						this.status(channel.source.id, { state: 'error', detail: `Twitch refused ${failure.message}` });
 					} else {
 						subscribed++;
-						this.status(channel.source.id, { state: 'connected' });
+						this.status(channel.source.id, spendNote ? { state: 'connected', detail: spendNote } : { state: 'connected' });
 					}
 				} catch (err) {
 					if (err instanceof NotSignedInError) {
@@ -358,17 +380,86 @@ export class TwitchChat {
 		ws.close();
 	}
 
-	/** Creates one subscription. Returns `undefined` on success or a message when Twitch refuses for good. */
-	private async subscribe(type: string, channel: Channel, sessionId: string): Promise<string | undefined> {
+	/**
+	 * Subscribes to spending and AutoMod holds in the user's own channel. Never throws: chat works without them.
+	 * Returns a note for the channel's status when they could not be had, or `undefined` when they could.
+	 */
+	private async subscribeOwnChannel(channel: Channel, sessionId: string): Promise<string | undefined> {
+		const results = await Promise.all(
+			OWN_CHANNEL_SUBSCRIPTIONS.map(async ({ type, version, moderator }) => {
+				const condition: Record<string, string> = { broadcaster_user_id: channel.broadcasterId };
+				if (moderator) {
+					condition.moderator_user_id = this.userId;
+				}
+				try {
+					const refusal = await this.subscribe(type, version, condition, sessionId);
+					if (refusal) {
+						this.options.sink.log(`Twitch refused ${refusal.message}`);
+					}
+					return refusal;
+				} catch (err) {
+					this.options.sink.log(`Twitch subscription to ${type} failed: ${errorText(err)}`);
+					return { status: 0, message: errorText(err) };
+				}
+			}),
+		);
+		if (results.some((result) => result?.status === 403)) {
+			return 'Sign in to Twitch again to show channel points, Bits spent and messages AutoMod holds.';
+		}
+		if (results.some((result) => result !== undefined)) {
+			return 'Some of channel points, Bits spent and AutoMod holds cannot be shown; see the Caerwyn output for why.';
+		}
+		return undefined;
+	}
+
+	/**
+	 * Lets a message AutoMod held into chat, or keeps it out. Twitch then sends `automod.message.update`, which is
+	 * what changes the held row. Throws `ModerationError` with a message for the user when Twitch refuses.
+	 */
+	async resolveHeld(messageId: string, allow: boolean): Promise<void> {
+		let res: Response;
+		try {
+			res = await this.options.auth.fetch(`${this.helixUrl}/moderation/automod/message`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ user_id: this.userId, msg_id: messageId, action: allow ? 'ALLOW' : 'DENY' }),
+			});
+		} catch (err) {
+			if (err instanceof NotSignedInError) {
+				throw new ModerationError('Sign in to Twitch again to allow or deny held messages.');
+			}
+			throw new ModerationError(`Could not reach Twitch: ${errorText(err)}`);
+		}
+		if (res.status === 204 || res.ok) {
+			return;
+		}
+		const body = (await res.json().catch(() => ({}))) as { message?: string };
+		this.options.sink.log(`Twitch refused to ${allow ? 'allow' : 'deny'} a held message: HTTP ${res.status} ${body.message ?? ''}`.trim());
+		switch (res.status) {
+			case 400:
+				throw new ModerationError('That message was already allowed or denied, or its hold has expired.');
+			case 401:
+				throw new ModerationError('Sign in to Twitch again to allow or deny held messages.');
+			case 403:
+				throw new ModerationError('Twitch says you are not a moderator of this channel.');
+			case 404:
+				throw new ModerationError('Twitch no longer has that message.');
+			default:
+				throw new ModerationError(`Twitch: ${body.message ?? `HTTP ${res.status}`}`);
+		}
+	}
+
+	/** Creates one subscription. Returns `undefined` on success, or Twitch's refusal when retrying will not help. */
+	private async subscribe(
+		type: string,
+		version: string,
+		condition: Record<string, string>,
+		sessionId: string,
+	): Promise<{ status: number; message: string } | undefined> {
 		const res = await this.options.auth.fetch(`${this.helixUrl}/eventsub/subscriptions`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				type,
-				version: '1',
-				condition: { broadcaster_user_id: channel.broadcasterId, user_id: this.userId },
-				transport: { method: 'websocket', session_id: sessionId },
-			}),
+			body: JSON.stringify({ type, version, condition, transport: { method: 'websocket', session_id: sessionId } }),
 		});
 		// 409 means this exact subscription already exists on the session.
 		if (res.status === 202 || res.status === 409) {
@@ -383,7 +474,7 @@ export class TwitchChat {
 		if (res.status >= 500) {
 			throw new Error(`Twitch: ${message}`);
 		}
-		return `Twitch refused ${type}: ${message}`;
+		return { status: res.status, message: `${type}: ${message}` };
 	}
 
 	private onNotification(message: EventSubMessage): void {
@@ -410,8 +501,30 @@ export class TwitchChat {
 		const timestamp = Date.parse(message.metadata?.message_timestamp ?? '') || Date.now();
 		switch (message.metadata?.subscription_type) {
 			case 'channel.chat.message':
-				sink.event({ type: 'message', message: mapChatMessage(event, channel.source.id, timestamp) });
+				sink.event({ type: 'message', message: this.spending.message(event, channel.source.id, timestamp) });
 				break;
+			case 'channel.channel_points_automatic_reward_redemption.add': {
+				const redemption = event as unknown as AutomaticRedemptionEvent;
+				this.spend(mapAutomaticRedemption(redemption, channel.source.id, timestamp, id ?? String(timestamp)));
+				break;
+			}
+			case 'channel.bits.use':
+				this.spend(mapBitsUse(event as unknown as BitsUseEvent, channel.source.id, timestamp, id ?? String(timestamp)));
+				break;
+			case 'automod.message.hold': {
+				const held = mapAutomodHold(event as unknown as AutomodEvent, channel.source.id, timestamp);
+				if (held) {
+					sink.event({ type: 'message', message: held });
+				}
+				break;
+			}
+			case 'automod.message.update': {
+				const held = mapAutomodUpdate(event as unknown as AutomodEvent, channel.source.id, timestamp);
+				if (held) {
+					sink.event({ type: 'update', message: held });
+				}
+				break;
+			}
 			case 'channel.chat.notification':
 				sink.event({ type: 'message', message: mapNotification(event, channel.source.id, timestamp) });
 				break;
@@ -429,9 +542,24 @@ export class TwitchChat {
 		}
 	}
 
+	/** Shows a viewer's spending: as its own row, or as the cost of a chat message. */
+	private spend(result: SpendResult | undefined): void {
+		if (result?.kind === 'message') {
+			this.options.sink.event({ type: 'message', message: result.message });
+		} else if (result?.kind === 'cost') {
+			const updated = this.spending.cost(result.cost);
+			if (updated) {
+				this.options.sink.event({ type: 'update', message: updated });
+			}
+		}
+	}
+
 	private onRevocation(message: EventSubMessage): void {
 		const subscription = message.payload?.subscription;
-		this.options.sink.log(`Twitch revoked a subscription (${subscription?.status ?? 'unknown'}).`);
+		this.options.sink.log(`Twitch revoked a subscription (${subscription?.type ?? 'unknown type'}, ${subscription?.status ?? 'unknown'}).`);
+		if (OWN_CHANNEL_TYPES.has(subscription?.type ?? '')) {
+			return; // Chat goes on without it. Signing in again subscribes afresh.
+		}
 		if (this.revocationPending) {
 			return; // A channel's subscriptions are revoked together; the reconnect is already under way.
 		}

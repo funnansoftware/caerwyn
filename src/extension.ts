@@ -12,8 +12,10 @@ import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
 import { CHAT_SIDEBAR_VIEW_ID, ChatSidebar } from './panel/chatSidebar';
 import { ChatWebview } from './panel/chatWebview';
 
-// Read-only scopes. Sending and moderating will need broader ones, and signing in again.
-const TWITCH_SCOPES = ['user:read:chat'];
+// Reading chat, plus what the user's own channel needs: `channel:read:redemptions` and `bits:read` show what
+// viewers spend, and `moderator:manage:automod` shows the messages AutoMod holds and lets the user allow or deny
+// them, the only thing Caerwyn changes on Twitch. Other moderation will need broader scopes, and signing in again.
+const TWITCH_SCOPES = ['user:read:chat', 'channel:read:redemptions', 'bits:read', 'moderator:manage:automod'];
 const YOUTUBE_SCOPES = ['https://www.googleapis.com/auth/youtube.readonly'];
 const TWITCH_LOGIN = /^[A-Za-z0-9_]{1,25}$/;
 
