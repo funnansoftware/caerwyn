@@ -13,6 +13,7 @@ import {
 	TWITCH_TROUBLEMAKER,
 	TwitchChatter,
 	YOUTUBE_CHATTERS,
+	YOUTUBE_LINES,
 	YOUTUBE_OWNER,
 	YOUTUBE_TROUBLEMAKER,
 	YouTubeChatter,
@@ -494,9 +495,11 @@ export class SimulatedChat {
 		return min + Math.floor(this.random() * (max - min + 1));
 	}
 
-	/** A chat line. Emote names only mean something on Twitch, so YouTube lines leave them out. */
+	/** A chat line. Twitch emote names only mean something on Twitch, so YouTube lines swap them for YouTube emoji. */
 	private line(withEmotes = true): string {
-		const lines = withEmotes ? CHAT_LINES : CHAT_LINES.filter((line) => !line.split(' ').some((word) => word in TWITCH_EMOTES));
+		const lines = withEmotes
+			? CHAT_LINES
+			: [...CHAT_LINES.filter((line) => !line.split(' ').some((word) => word in TWITCH_EMOTES)), ...YOUTUBE_LINES];
 		return this.pick(lines);
 	}
 

@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { TWITCH_EMOTES } from '../chat/simulation/sampleData';
 import { SIMULATED_ACTIONS, SIMULATED_EVENTS, SimulatedChat, isSimulatedEventKind } from '../chat/simulation/simulatedChat';
 import { ChatEvent, ChatMessage } from '../chat/types';
+import { youtubeEmojiUrl } from '../chat/youtube/youtubeEmoji';
 import { RecordingSink, delay } from './helpers';
 
 function simulator(seed = 1, rate = 0) {
@@ -62,8 +63,13 @@ suite('SimulatedChat', () => {
 			for (const fragment of message.fragments) {
 				if (fragment.type === 'emote') {
 					emotes++;
-					const match = /^https:\/\/static-cdn\.jtvnw\.net\/emoticons\/v2\/(\d+)\/static\/dark\/2\.0$/.exec(fragment.url);
-					assert.ok(match && knownIds.has(match[1]), fragment.url);
+					if (message.platform === 'youtube') {
+						assert.strictEqual(fragment.url, youtubeEmojiUrl(fragment.text), fragment.text);
+						assert.ok(fragment.url);
+					} else {
+						const match = /^https:\/\/static-cdn\.jtvnw\.net\/emoticons\/v2\/(\d+)\/static\/dark\/2\.0$/.exec(fragment.url);
+						assert.ok(match && knownIds.has(match[1]), fragment.url);
+					}
 				}
 			}
 		}

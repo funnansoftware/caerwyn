@@ -3,6 +3,7 @@ import { NotSignedInError, YOUTUBE_SELF, youtubeVideoSource } from '../chat/type
 import { JsonObjectStream } from '../chat/youtube/jsonStream';
 import { parseVideoId } from '../chat/youtube/videoId';
 import { YouTubeChat } from '../chat/youtube/youtubeChat';
+import { youtubeEmojiUrl } from '../chat/youtube/youtubeEmoji';
 import { mapYouTubeItem } from '../chat/youtube/youtubeMapper';
 import { FakeAuth, RecordingSink, delay, json, streamed, waitFor } from './helpers';
 
@@ -74,6 +75,45 @@ suite('mapYouTubeItem', () => {
 		assert.ok(result && result !== 'ended' && result.type === 'message');
 		assert.strictEqual(result.message.headline, 'Super Chat $5.00');
 		assert.deepStrictEqual(result.message.fragments, [{ type: 'text', text: 'gg' }]);
+	});
+
+	const fragmentsOf = (item: Parameters<typeof mapYouTubeItem>[0]) => {
+		const result = mapYouTubeItem(item, context);
+		assert.ok(result && result !== 'ended' && result.type === 'message');
+		return result.message.fragments;
+	};
+	const wave = { type: 'emote', text: ':hand-pink-waving:', url: youtubeEmojiUrl(':hand-pink-waving:') };
+
+	test('turns global emoji shortcodes into emotes', () => {
+		assert.match(wave.url ?? '', /^https:\/\/yt3\.ggpht\.com\/[\w-]+=w48-h48-c-k-nd$/);
+		assert.ok(youtubeEmojiUrl(':text-green-game-over:'));
+		assert.deepStrictEqual(fragmentsOf(textItem('m1', 'hi :hand-pink-waving: all')), [
+			{ type: 'text', text: 'hi ' },
+			wave,
+			{ type: 'text', text: ' all' },
+		]);
+		assert.deepStrictEqual(fragmentsOf(textItem('m2', ':hand-pink-waving::hand-pink-waving:')), [wave, wave]);
+	});
+
+	test('leaves unknown shortcodes and other colons as text', () => {
+		for (const plain of ['10:30: ok', ':not-an-emoji:', 'see https://example.com:8080/a:b', ':', '::', 'a:b']) {
+			assert.deepStrictEqual(fragmentsOf(textItem('m1', plain)), [{ type: 'text', text: plain }], plain);
+		}
+		assert.strictEqual(youtubeEmojiUrl(':constructor:'), undefined);
+		assert.strictEqual(youtubeEmojiUrl('hasOwnProperty'), undefined);
+		// A colon that closes something else can still open a shortcode.
+		assert.deepStrictEqual(fragmentsOf(textItem('m2', 'at 10:30:hand-pink-waving:')), [{ type: 'text', text: 'at 10:30' }, wave]);
+	});
+
+	test('turns emoji into emotes in Super Chat and milestone comments', () => {
+		assert.deepStrictEqual(
+			fragmentsOf({ id: 'm3', snippet: { type: 'superChatEvent', superChatDetails: { userComment: ':hand-pink-waving:' } } }),
+			[wave],
+		);
+		assert.deepStrictEqual(
+			fragmentsOf({ id: 'm4', snippet: { type: 'memberMilestoneChatEvent', memberMilestoneChatDetails: { userComment: 'yay :hand-pink-waving:' } } }),
+			[{ type: 'text', text: 'yay ' }, wave],
+		);
 	});
 
 	test('maps removals, bans and the end of chat', () => {

@@ -1,4 +1,5 @@
 import { ChatAuthor, ChatEvent, ChatMessage, Fragment, Role } from '../types';
+import { youtubeEmojiUrl } from './youtubeEmoji';
 
 // Pure mapping from YouTube `liveChatMessage` resources to the platform-neutral model.
 // Field names follow the YouTube Data API v3 discovery document.
@@ -38,8 +39,40 @@ export interface YouTubeMapContext {
 /** What one chat item means: an event to show, the end of the chat, or nothing worth showing. */
 export type YouTubeMapResult = ChatEvent | 'ended' | undefined;
 
+/**
+ * Splits chat text into text and emotes. YouTube sends its custom emoji as shortcodes such as
+ * `:hand-pink-waving:`; only exact known shortcodes become emotes, so `10:30:` or `:unknown:` stay as text.
+ */
 function text(value: string | undefined): Fragment[] {
-	return value ? [{ type: 'text', text: value }] : [];
+	if (!value) {
+		return [];
+	}
+	const fragments: Fragment[] = [];
+	let plainStart = 0;
+	let open = value.indexOf(':');
+	while (open !== -1) {
+		const close = value.indexOf(':', open + 1);
+		if (close === -1) {
+			break;
+		}
+		const shortcode = value.slice(open, close + 1);
+		const url = youtubeEmojiUrl(shortcode);
+		if (url) {
+			if (open > plainStart) {
+				fragments.push({ type: 'text', text: value.slice(plainStart, open) });
+			}
+			fragments.push({ type: 'emote', text: shortcode, url });
+			plainStart = close + 1;
+			open = value.indexOf(':', plainStart);
+		} else {
+			// The closing colon may open the next shortcode, as in `10:30:hand-pink-waving:`.
+			open = close;
+		}
+	}
+	if (plainStart < value.length) {
+		fragments.push({ type: 'text', text: value.slice(plainStart) });
+	}
+	return fragments;
 }
 
 function mapAuthor(item: YouTubeChatItem): ChatAuthor {

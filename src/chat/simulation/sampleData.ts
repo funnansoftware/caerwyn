@@ -124,6 +124,14 @@ export const CHAT_LINES = [
 	'<b>not bold</b> & "quotes" stay as text',
 ];
 
+/** YouTube-only lines: global emoji shortcodes become emotes in YouTube messages. */
+export const YOUTUBE_LINES = [
+	':hand-pink-waving: hi from YouTube',
+	'that bug is finally gone :text-green-game-over:',
+	':face-blue-smiling::face-blue-smiling:',
+	'see you at 10:30: same time tomorrow :yt:',
+];
+
 export const LONG_LINES = [
 	'I ran into almost the same problem last month and it turned out the cache was holding on to a stale build, so every change I made looked like it did nothing until I wiped the output folder and rebuilt from scratch, which took me far longer to work out than I would like to admit',
 	'longunbrokenwordtocheckthatwrappingstillbehaveswhensomeonepastesaverylongtokenorurlintochatwithoutanyspacesatall_https://example.com/a/really/long/path/that/keeps/going/and/going/and/going?with=query&and=more',
