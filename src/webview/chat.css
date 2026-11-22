@@ -49,14 +49,84 @@ body.view {
 	outline-offset: -1px;
 }
 
-/* Sources bar */
+/* Header: connected sources, then the platform filter */
+
+.header {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.header:has(> .sources[hidden]):has(> .filters[hidden]) {
+	display: none;
+}
 
 .sources {
 	display: flex;
+	flex: 1 1 auto;
 	flex-wrap: wrap;
 	gap: 6px;
-	padding: 6px 10px;
-	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.filters {
+	display: inline-flex;
+	flex: none;
+	margin-left: auto;
+	border: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.filter {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 2px 9px;
+	border: 0;
+	border-radius: 0;
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	font-size: 0.9em;
+}
+
+.filter + .filter {
+	border-left: 1px solid var(--vscode-button-border, var(--vscode-panel-border, transparent));
+}
+
+.filter:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.filter[aria-pressed='true'] {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.filter[aria-pressed='true']:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.filter .logo {
+	width: 1.1em;
+	height: 1.1em;
+}
+
+.filter.icon-only {
+	padding: 2px 7px;
+}
+
+/* High contrast marks the chosen filter by outline as well as fill. */
+.vscode-high-contrast .filter[aria-pressed='true'] {
+	outline: 1px solid var(--vscode-contrastActiveBorder, currentColor);
+	outline-offset: -2px;
+}
+
+.only-twitch .msg.youtube,
+.only-youtube .msg.twitch {
+	display: none;
 }
 
 .chip {
@@ -162,17 +232,15 @@ body.view {
 }
 
 .platform {
-	display: inline-block;
-	width: 1.3em;
+	display: inline-flex;
 	margin-right: 6px;
-	border-radius: 3px;
-	background: var(--platform);
-	color: #fff;
-	font-size: 0.75em;
-	font-weight: 700;
-	line-height: 1.3em;
-	text-align: center;
-	vertical-align: 0.1em;
+	vertical-align: -0.2em;
+}
+
+.logo {
+	flex: none;
+	width: 1.15em;
+	height: 1.15em;
 }
 
 .badge {
@@ -252,6 +320,7 @@ body.view {
 
 .empty[hidden],
 .sources[hidden],
+.filters[hidden],
 .jump[hidden],
 .card[hidden],
 .card-status[hidden] {

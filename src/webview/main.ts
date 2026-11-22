@@ -1,13 +1,30 @@
 import { formatDuration, type ModerationAction } from '../chat/moderation';
 import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, Platform, Role, SourceInfo } from '../chat/types';
 import type { HostMessage, ViewAction, ViewSettings, WebviewMessage } from '../panel/protocol';
+import { platformLogo } from './logos';
 
 // The chat tab's renderer. It holds no state of its own beyond the DOM: the extension host sends the
 // recent history on `ready` and then a stream of events.
 // All chat content is untrusted and only ever reaches the page through `textContent`.
 
-declare function acquireVsCodeApi(): { postMessage(message: WebviewMessage): void };
+declare function acquireVsCodeApi(): {
+	postMessage(message: WebviewMessage): void;
+	getState(): unknown;
+	setState(state: unknown): void;
+};
 const vscode = acquireVsCodeApi();
+
+type PlatformFilter = 'all' | Platform;
+
+/** What this view remembers while it is hidden and rebuilt. Each view (tab, sidebar) keeps its own. */
+interface ViewState {
+	platformFilter?: PlatformFilter;
+}
+
+function savedState(): ViewState {
+	const state = vscode.getState();
+	return typeof state === 'object' && state !== null ? (state as ViewState) : {};
+}
 
 /** How close to the bottom, in pixels, still counts as following the chat. */
 const STICK_THRESHOLD = 48;
@@ -53,7 +70,12 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
 }
 
 const root = document.getElementById('root') as HTMLElement;
-const sourcesBar = el('header', 'sources');
+const header = el('header', 'header');
+const sourcesBar = el('div', 'sources');
+const filterBar = el('div', 'filters');
+filterBar.setAttribute('role', 'toolbar');
+filterBar.setAttribute('aria-label', 'Show messages from');
+header.append(sourcesBar, filterBar);
 const log = el('main', 'log');
 const empty = el('div', 'empty');
 const jump = el('button', 'jump');
@@ -62,12 +84,16 @@ log.setAttribute('role', 'log');
 jump.hidden = true;
 card.hidden = true;
 card.setAttribute('role', 'dialog');
-root.append(sourcesBar, log, empty, jump, card);
+root.append(header, log, empty, jump, card);
 
 let settings: ViewSettings = { maxMessages: 500, showTimestamps: false };
 let sources: SourceInfo[] = [];
 let stick = true;
 let unseen = 0;
+let platformFilter: PlatformFilter = (() => {
+	const saved = savedState().platformFilter;
+	return saved === 'twitch' || saved === 'youtube' ? saved : 'all';
+})();
 const rows = new Map<string, HTMLElement>();
 /** The messages behind `rows`, for the user card's history. */
 const shown = new Map<string, ChatMessage>();
@@ -121,7 +147,10 @@ function appendBadges(target: HTMLElement, roles: Role[]): void {
 }
 
 function platformTag(platform: Platform, channelName: string): HTMLElement {
-	const tag = el('span', 'platform', platform === 'twitch' ? 'T' : 'Y');
+	const tag = el('span', 'platform');
+	tag.append(platformLogo(platform));
+	tag.setAttribute('role', 'img');
+	tag.setAttribute('aria-label', platformName(platform));
 	tag.title = `${platformName(platform)} · ${channelName}`;
 	return tag;
 }
@@ -198,10 +227,27 @@ function updateJump(): void {
 	jump.textContent = `${unseen} new ${unseen === 1 ? 'message' : 'messages'} ↓`;
 }
 
+/** The filter in force. With only one platform connected there is nothing to filter, whatever was chosen. */
+function activeFilter(): PlatformFilter {
+	return filterBar.hidden ? 'all' : platformFilter;
+}
+
+function isShown(message: ChatMessage): boolean {
+	const filter = activeFilter();
+	return filter === 'all' || filter === message.platform;
+}
+
 function updateEmpty(): void {
 	empty.replaceChildren();
-	empty.hidden = rows.size > 0;
+	const filter = activeFilter();
+	const visible = filter === 'all' ? rows.size > 0 : log.querySelector(`.msg.${filter}`) !== null;
+	empty.hidden = visible;
+	if (visible) {
+		return;
+	}
 	if (rows.size > 0) {
+		// Everything on screen is filtered out.
+		empty.append(el('p', 'empty-text', `No ${platformName(filter as Platform)} messages yet.`));
 		return;
 	}
 	if (sources.length === 0) {
@@ -221,6 +267,8 @@ function updateEmpty(): void {
 function appendMessages(messages: readonly ChatMessage[]): void {
 	const batch = document.createDocumentFragment();
 	let added = 0;
+	/** Only messages that pass the filter count towards "new messages". */
+	let visible = 0;
 	for (const message of messages) {
 		if (rows.has(message.key)) {
 			continue;
@@ -230,6 +278,9 @@ function appendMessages(messages: readonly ChatMessage[]): void {
 		shown.set(message.key, message);
 		batch.append(row);
 		added++;
+		if (isShown(message)) {
+			visible++;
+		}
 	}
 	if (added === 0) {
 		return;
@@ -246,7 +297,7 @@ function appendMessages(messages: readonly ChatMessage[]): void {
 	if (stick) {
 		log.scrollTop = log.scrollHeight;
 	} else {
-		unseen += added;
+		unseen += visible;
 	}
 	updateJump();
 	updateEmpty();
@@ -310,8 +361,72 @@ function renderSources(): void {
 		}
 		sourcesBar.append(chip);
 	}
+	renderFilters();
 	updateEmpty();
 	refreshCard();
+}
+
+const FILTER_OPTIONS: [PlatformFilter, string][] = [
+	['all', 'All'],
+	['twitch', 'Twitch'],
+	['youtube', 'YouTube'],
+];
+
+/** The platform filter, shown only when chat comes from more than one platform. */
+function renderFilters(): void {
+	const platforms = new Set(sources.map((info) => info.source.platform));
+	filterBar.hidden = platforms.size < 2;
+	if (filterBar.childElementCount === 0) {
+		buildFilterButtons();
+	}
+	applyFilter();
+}
+
+function buildFilterButtons(): void {
+	for (const [value, label] of FILTER_OPTIONS) {
+		const button = el('button', value === 'all' ? 'filter' : `filter ${value}`);
+		button.type = 'button';
+		button.dataset.filter = value;
+		if (value === 'all') {
+			button.append(label);
+			button.title = 'Show all chat';
+		} else {
+			// The logo is the label on screen; the name still reaches screen readers and the tooltip.
+			button.classList.add('icon-only');
+			button.append(platformLogo(value));
+			button.setAttribute('aria-label', label);
+			button.title = `Show only ${label} chat`;
+		}
+		button.setAttribute('aria-pressed', String(value === platformFilter));
+		button.addEventListener('click', () => setPlatformFilter(value));
+		filterBar.append(button);
+	}
+}
+
+function setPlatformFilter(value: PlatformFilter): void {
+	if (value === platformFilter) {
+		return;
+	}
+	platformFilter = value;
+	vscode.setState({ ...savedState(), platformFilter: value } satisfies ViewState);
+	// Update in place rather than rebuild, so the clicked button keeps keyboard focus.
+	for (const button of filterBar.querySelectorAll('button')) {
+		button.setAttribute('aria-pressed', String(button.dataset.filter === value));
+	}
+	applyFilter();
+	// What was unseen under the old filter means nothing under the new one; show the newest of what is now visible.
+	stick = true;
+	unseen = 0;
+	log.scrollTop = log.scrollHeight;
+	updateJump();
+}
+
+/** Hides filtered-out messages with CSS, so switching is instant and messages keep arriving underneath. */
+function applyFilter(): void {
+	const filter = activeFilter();
+	root.classList.toggle('only-twitch', filter === 'twitch');
+	root.classList.toggle('only-youtube', filter === 'youtube');
+	updateEmpty();
 }
 
 function applySettings(next: ViewSettings): void {
