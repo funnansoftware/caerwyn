@@ -4,7 +4,7 @@ import { JsonObjectStream } from '../chat/youtube/jsonStream';
 import { parseVideoId } from '../chat/youtube/videoId';
 import { YouTubeChat } from '../chat/youtube/youtubeChat';
 import { mapYouTubeItem } from '../chat/youtube/youtubeMapper';
-import { FakeAuth, RecordingSink, json, streamed, waitFor } from './helpers';
+import { FakeAuth, RecordingSink, delay, json, streamed, waitFor } from './helpers';
 
 const context = { sourceId: 'youtube:me', liveChatId: 'chat1', channelName: 'My Stream' };
 
@@ -158,6 +158,41 @@ suite('YouTubeChat', () => {
 		assert.strictEqual(pollUrls[0].searchParams.get('pageToken'), null);
 		assert.strictEqual(pollUrls[1].searchParams.get('pageToken'), 't1');
 		assert.strictEqual(sink.labels.get(source.id), 'Some Channel');
+	});
+
+	test('reports the broadcast’s viewers while its chat is read, and clears them when it ends', async () => {
+		const sink = new RecordingSink();
+		let viewers = '1234';
+		let ended = false;
+		const auth = new FakeAuth((url) => {
+			if (url.includes('/liveBroadcasts')) {
+				const active = new URL(url).searchParams.get('broadcastStatus') === 'active';
+				return json({ items: active ? [{ id: 'vid1', snippet: { liveChatId: 'chat1', title: 'My Stream' } }] : [] });
+			}
+			if (url.includes('/videos')) {
+				return json({ items: [{ liveStreamingDetails: { concurrentViewers: viewers } }] });
+			}
+			return json({ items: ended ? [{ id: 'end', snippet: { type: 'chatEndedEvent' } }] : [], pollingIntervalMillis: 1 });
+		});
+		const chat = new YouTubeChat({ auth, source: YOUTUBE_SELF, sink, transport: 'poll', viewerIntervalMs: 20, lookupIntervalMs: 60_000 });
+		chat.start();
+		try {
+			await waitFor(() => sink.viewerCount('youtube:me') === 1234, 'the first count');
+			const lookup = new URL(auth.requests.find((request) => request.url.includes('/videos'))?.url ?? '');
+			assert.strictEqual(lookup.searchParams.get('id'), 'vid1', 'the broadcast ID is its video ID');
+			assert.deepStrictEqual(lookup.searchParams.getAll('part'), ['liveStreamingDetails']);
+
+			viewers = '1300';
+			await waitFor(() => sink.viewerCount('youtube:me') === 1300, 'the next count');
+			ended = true;
+			await waitFor(() => sink.state('youtube:me') === 'ended', 'the chat to end');
+			assert.strictEqual(sink.viewerCount('youtube:me'), undefined, 'no count once the chat has ended');
+			const polls = auth.requests.filter((request) => request.url.includes('/videos')).length;
+			await delay(100);
+			assert.strictEqual(auth.requests.filter((request) => request.url.includes('/videos')).length, polls, 'polling stops with the chat');
+		} finally {
+			chat.dispose();
+		}
 	});
 
 	test('reports a quota error once and does not retry', async () => {

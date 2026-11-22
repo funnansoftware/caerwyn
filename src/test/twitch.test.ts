@@ -275,6 +275,48 @@ suite('TwitchChat', () => {
 		assert.strictEqual(eventSub.connections.length, 2);
 	});
 
+	test('reports each channel’s viewers from one request, counting an offline channel as unknown', async () => {
+		const sink = new RecordingSink();
+		let live = 42;
+		const auth = new FakeAuth((url) =>
+			url.includes('/streams') ? json({ data: [{ user_id: '100', viewer_count: live, type: 'live' }] }) : helix(url),
+		);
+		const other = twitchChannelSource('other');
+		chat = new TwitchChat({ auth, sources: [TWITCH_SELF, other], sink, wsUrl: eventSub.url, helixUrl: 'https://helix.test', viewerIntervalMs: 30 });
+		chat.start();
+		await waitFor(() => sink.viewerCount('twitch:me') === 42, 'the first count');
+		assert.strictEqual(sink.viewerCount(other.id), undefined, 'a channel Get Streams leaves out is offline');
+		assert.ok(sink.viewerReports.has(other.id), 'the offline channel is still reported');
+		const query = new URL(auth.requests.find((request) => request.url.includes('/streams'))?.url ?? '').searchParams;
+		assert.deepStrictEqual(query.getAll('user_id'), ['100', '200']);
+
+		live = 57;
+		await waitFor(() => sink.viewerCount('twitch:me') === 57, 'the next count');
+	});
+
+	test('a failing viewer count is logged once, leaves the chat alone, and is cleared once it is stale', async () => {
+		const sink = new RecordingSink();
+		let failing = false;
+		const auth = new FakeAuth((url) => {
+			if (!url.includes('/streams')) {
+				return helix(url);
+			}
+			return failing ? json({ message: 'Too many requests' }, 429) : json({ data: [{ user_id: '100', viewer_count: 42 }] });
+		});
+		chat = new TwitchChat({ auth, sources: [TWITCH_SELF], sink, wsUrl: eventSub.url, helixUrl: 'https://helix.test', viewerIntervalMs: 20 });
+		chat.start();
+		await waitFor(() => sink.state('twitch:me') === 'connected' && sink.viewerCount('twitch:me') === 42, 'the channel and its count');
+
+		failing = true;
+		const before = auth.requests.length;
+		await waitFor(() => sink.viewerCount('twitch:me') === undefined, 'the stale count to clear');
+		const attempts = auth.requests.slice(before).filter((request) => request.url.includes('/streams')).length;
+		assert.ok(attempts >= 3, `cleared only after repeated failures, not after ${attempts}`);
+		await delay(100);
+		assert.strictEqual(sink.logs.filter((line) => line.includes('viewer count')).length, 1);
+		assert.strictEqual(sink.state('twitch:me'), 'connected');
+	});
+
 	test('asks for sign-in without connecting when there is no session', async () => {
 		const sink = new RecordingSink();
 		const auth = new FakeAuth(helix);

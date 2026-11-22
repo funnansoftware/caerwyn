@@ -60,8 +60,36 @@ body.view {
 	border-bottom: 1px solid var(--vscode-panel-border, transparent);
 }
 
-.header:has(> .sources[hidden]):has(> .filters[hidden]) {
+.header:has(> .viewers[hidden]):has(> .sources[hidden]):has(> .filters[hidden]) {
 	display: none;
+}
+
+/* Viewer totals: an eye, then each live platform's logo and audience. */
+
+.viewers {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	gap: 10px;
+	font-size: 0.9em;
+	font-variant-numeric: tabular-nums;
+}
+
+.viewers > .icon {
+	color: var(--vscode-descriptionForeground);
+}
+
+.viewer-count {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.viewer-count .logo {
+	width: 1.1em;
+	height: 1.1em;
 }
 
 .sources {
@@ -319,6 +347,7 @@ body.view {
 }
 
 .empty[hidden],
+.viewers[hidden],
 .sources[hidden],
 .filters[hidden],
 .jump[hidden],

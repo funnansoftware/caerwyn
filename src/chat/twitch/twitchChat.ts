@@ -21,6 +21,12 @@ const WATCHDOG_GRACE_MS = 10_000;
 const SEEN_LIMIT = 1000;
 /** A revocation this soon after the last one means reconnecting did not help. */
 const REVOCATION_RETRY_MS = 60_000;
+/** Twitch refreshes `viewer_count` every minute or two, so asking more often shows nothing new. */
+const DEFAULT_VIEWER_INTERVAL_MS = 60_000;
+/** The most `user_id`s one Get Streams request accepts. */
+const STREAMS_PAGE = 100;
+/** After this many failed viewer lookups in a row the last count is too old to show as current. */
+const VIEWER_FAILURES_BEFORE_CLEARING = 3;
 
 export interface TwitchChatOptions {
 	auth: ChatAuth;
@@ -29,6 +35,8 @@ export interface TwitchChatOptions {
 	wsUrl?: string;
 	helixUrl?: string;
 	keepaliveSeconds?: number;
+	/** How often to fetch each channel's viewer count. */
+	viewerIntervalMs?: number;
 }
 
 interface Channel {
@@ -64,6 +72,10 @@ export class TwitchChat {
 	private retryTimer: NodeJS.Timeout | undefined;
 	private watchdog: NodeJS.Timeout | undefined;
 	private validateTimer: NodeJS.Timeout | undefined;
+	private viewerTimer: NodeJS.Timeout | undefined;
+	/** The last viewer-count failure, so a lasting one is logged once rather than every interval. */
+	private viewerFailure: string | undefined;
+	private viewerFailures = 0;
 	private readonly seen = new Set<string>();
 
 	constructor(private readonly options: TwitchChatOptions) {
@@ -81,6 +93,7 @@ export class TwitchChat {
 		clearTimeout(this.retryTimer);
 		clearTimeout(this.watchdog);
 		clearInterval(this.validateTimer);
+		clearTimeout(this.viewerTimer);
 		this.socket?.terminate();
 		this.nextSocket?.terminate();
 	}
@@ -114,7 +127,73 @@ export class TwitchChat {
 			return;
 		}
 		this.validateTimer = setInterval(() => void this.revalidate(), VALIDATE_INTERVAL_MS);
+		void this.pollViewers();
 		this.connect(this.wsUrl);
+	}
+
+	/**
+	 * Fetches every channel's viewer count now and then on a timer, until the connection stops for good.
+	 * Viewer counts are extra: a failure here is logged and never changes the chat's status.
+	 */
+	private async pollViewers(): Promise<void> {
+		clearTimeout(this.viewerTimer);
+		try {
+			await this.updateViewers();
+			this.viewerFailure = undefined;
+			this.viewerFailures = 0;
+		} catch (err) {
+			const text = errorText(err);
+			if (text !== this.viewerFailure && !this.disposed) {
+				this.options.sink.log(`Twitch viewer count: ${text}`);
+			}
+			this.viewerFailure = text;
+			if (++this.viewerFailures >= VIEWER_FAILURES_BEFORE_CLEARING) {
+				this.clearViewers();
+			}
+		}
+		if (this.disposed) {
+			return;
+		}
+		if (this.stopped) {
+			this.clearViewers();
+			return;
+		}
+		this.viewerTimer = setTimeout(() => void this.pollViewers(), this.options.viewerIntervalMs ?? DEFAULT_VIEWER_INTERVAL_MS);
+	}
+
+	private async updateViewers(): Promise<void> {
+		const ids = [...this.channels.keys()];
+		const live = new Map<string, number>();
+		for (let start = 0; start < ids.length; start += STREAMS_PAGE) {
+			const query = ids
+				.slice(start, start + STREAMS_PAGE)
+				.map((id) => `user_id=${encodeURIComponent(id)}`)
+				.join('&');
+			const res = await this.options.auth.fetch(`${this.helixUrl}/streams?${query}&first=${STREAMS_PAGE}`);
+			const body = (await res.json().catch(() => ({}))) as {
+				message?: string;
+				data?: { user_id?: unknown; viewer_count?: unknown }[];
+			};
+			if (!res.ok) {
+				throw new Error(body.message ?? `HTTP ${res.status}`);
+			}
+			for (const stream of Array.isArray(body.data) ? body.data : []) {
+				const count = stream?.viewer_count;
+				if (typeof stream?.user_id === 'string' && typeof count === 'number' && Number.isFinite(count) && count >= 0) {
+					live.set(stream.user_id, count);
+				}
+			}
+		}
+		// A channel Get Streams leaves out is offline.
+		for (const [broadcasterId, channel] of this.channels) {
+			this.viewers(channel.source.id, live.get(broadcasterId));
+		}
+	}
+
+	private clearViewers(): void {
+		for (const channel of this.channels.values()) {
+			this.viewers(channel.source.id, undefined);
+		}
 	}
 
 	private async resolveChannels(account: Account): Promise<void> {
@@ -272,6 +351,10 @@ export class TwitchChat {
 		}
 		// Twitch closes a connection that has no subscriptions. Only reconnect if trying again could work.
 		this.stopped = !retryable;
+		if (this.stopped) {
+			clearTimeout(this.viewerTimer);
+			this.clearViewers();
+		}
 		ws.close();
 	}
 
@@ -375,6 +458,8 @@ export class TwitchChat {
 		} catch (err) {
 			if (err instanceof NotSignedInError && !this.disposed) {
 				this.stopped = true;
+				clearTimeout(this.viewerTimer);
+				this.clearViewers();
 				this.setChannels({ state: 'needsSignIn', detail: err.message });
 				this.socket?.close();
 			} else {
@@ -387,6 +472,12 @@ export class TwitchChat {
 	private status(sourceId: string, status: SourceStatus, label?: string): void {
 		if (!this.disposed) {
 			this.options.sink.status(sourceId, status, label);
+		}
+	}
+
+	private viewers(sourceId: string, count: number | undefined): void {
+		if (!this.disposed) {
+			this.options.sink.viewers(sourceId, count);
 		}
 	}
 

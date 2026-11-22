@@ -11,6 +11,10 @@ const DEFAULT_API_URL = 'https://www.googleapis.com/youtube/v3';
 const DEFAULT_STREAM_URL = 'https://youtube.googleapis.com/youtube/v3/liveChat/messages/stream';
 /** A stream that closes sooner than this counts as a failed attempt, so reconnects back off. */
 const SHORT_STREAM_MS = 10_000;
+/** Each viewer-count lookup costs 1 quota unit, so once a minute is 60 units an hour. */
+const DEFAULT_VIEWER_INTERVAL_MS = 60_000;
+/** After this many failed viewer lookups in a row the last count is too old to show as current. */
+const VIEWER_FAILURES_BEFORE_CLEARING = 3;
 
 export type YouTubeTransport = 'stream' | 'poll';
 
@@ -23,6 +27,8 @@ export interface YouTubeChatOptions {
 	streamUrl?: string;
 	/** How long to wait before looking again for a broadcast that is not live yet. */
 	lookupIntervalMs?: number;
+	/** How often to fetch the stream's viewer count while its chat is being read. */
+	viewerIntervalMs?: number;
 }
 
 export class YouTubeApiError extends Error {
@@ -64,13 +70,15 @@ interface ChatResponse extends ApiErrorBody {
 	pollingIntervalMillis?: number;
 }
 
-type Lookup = { liveChatId: string; title: string } | { wait: string } | { ended: string };
+/** `videoId` is the broadcast's video, where its viewer count is read; without it there is no count. */
+type Lookup = { liveChatId: string; title: string; videoId?: string } | { wait: string } | { ended: string };
 
 export class YouTubeChat {
 	private readonly abort = new AbortController();
 	private readonly apiUrl: string;
 	private readonly streamUrl: string;
 	private readonly lookupIntervalMs: number;
+	private readonly viewerIntervalMs: number;
 	private pageToken: string | undefined;
 	private pollMs = 5000;
 
@@ -78,6 +86,7 @@ export class YouTubeChat {
 		this.apiUrl = options.apiUrl ?? DEFAULT_API_URL;
 		this.streamUrl = options.streamUrl ?? DEFAULT_STREAM_URL;
 		this.lookupIntervalMs = options.lookupIntervalMs ?? 60_000;
+		this.viewerIntervalMs = options.viewerIntervalMs ?? DEFAULT_VIEWER_INTERVAL_MS;
 	}
 
 	start(): void {
@@ -107,7 +116,16 @@ export class YouTubeChat {
 				const found = await this.findChat();
 				if ('liveChatId' in found) {
 					attempt = 0;
-					await this.readChat(found.liveChatId, found.title);
+					const watching = new AbortController();
+					if (found.videoId) {
+						void this.pollViewers(found.videoId, AbortSignal.any([this.signal, watching.signal]));
+					}
+					try {
+						await this.readChat(found.liveChatId, found.title);
+					} finally {
+						watching.abort();
+						this.viewers(undefined);
+					}
 					this.status({ state: 'ended', detail: 'The live chat has ended.' });
 					if (this.options.source.kind === 'video') {
 						return;
@@ -138,12 +156,56 @@ export class YouTubeChat {
 		}
 	}
 
-	private async getJson<T>(url: string): Promise<T> {
-		const res = await this.options.auth.fetch(url, { signal: this.signal });
+	private async getJson<T>(url: string, signal = this.signal): Promise<T> {
+		const res = await this.options.auth.fetch(url, { signal });
 		if (!res.ok) {
 			throw await failure(res);
 		}
 		return (await res.json()) as T;
+	}
+
+	/** A disposed connection stays quiet, so it cannot overwrite the count of its replacement. */
+	private viewers(count: number | undefined): void {
+		if (!this.signal.aborted) {
+			this.options.sink.viewers(this.options.source.id, count);
+		}
+	}
+
+	/**
+	 * Fetches the stream's viewer count now and then on a timer, until `signal` aborts.
+	 * Viewer counts are extra: a failure here is logged and never interrupts the chat.
+	 */
+	private async pollViewers(videoId: string, signal: AbortSignal): Promise<void> {
+		const url = `${this.apiUrl}/videos?part=liveStreamingDetails&id=${encodeURIComponent(videoId)}`;
+		let lastFailure: string | undefined;
+		let failures = 0;
+		while (!signal.aborted) {
+			try {
+				const data = await this.getJson<{ items?: { liveStreamingDetails?: { concurrentViewers?: unknown } }[] }>(url, signal);
+				if (signal.aborted) {
+					return;
+				}
+				// A string of digits; absent when the stream is not live or its owner hides the count.
+				const raw = data?.items?.[0]?.liveStreamingDetails?.concurrentViewers;
+				const count = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : undefined;
+				this.viewers(count);
+				lastFailure = undefined;
+				failures = 0;
+			} catch (err) {
+				if (signal.aborted) {
+					return;
+				}
+				const text = describe(err);
+				if (text !== lastFailure) {
+					this.options.sink.log(`YouTube viewer count: ${text}`);
+				}
+				lastFailure = text;
+				if (++failures >= VIEWER_FAILURES_BEFORE_CLEARING) {
+					this.viewers(undefined);
+				}
+			}
+			await sleep(this.viewerIntervalMs, signal).catch(() => undefined);
+		}
 	}
 
 	private async findChat(): Promise<Lookup> {
@@ -162,7 +224,7 @@ export class YouTubeChat {
 			const title = video.snippet?.channelTitle || video.snippet?.title || source.videoId;
 			const liveChatId = video.liveStreamingDetails?.activeLiveChatId;
 			if (liveChatId) {
-				return { liveChatId, title };
+				return { liveChatId, title, videoId: source.videoId };
 			}
 			return video.snippet?.liveBroadcastContent === 'upcoming'
 				? { wait: 'This stream has no live chat yet. Checking again every minute.' }
@@ -171,14 +233,16 @@ export class YouTubeChat {
 		// `broadcastType` defaults to `event`, which leaves out "stream now" broadcasts.
 		for (const status of ['active', 'upcoming']) {
 			const data = await this.getJson<{
-				items?: { snippet?: { liveChatId?: string; title?: string; scheduledStartTime?: string } }[];
+				// A broadcast's `id` is the ID of the video it plays as.
+				items?: { id?: string; snippet?: { liveChatId?: string; title?: string; scheduledStartTime?: string } }[];
 			}>(`${this.apiUrl}/liveBroadcasts?part=snippet&part=status&broadcastStatus=${status}&broadcastType=all&maxResults=50`);
 			const broadcasts = (data.items ?? [])
 				.filter((item) => item.snippet?.liveChatId)
 				.sort((a, b) => (a.snippet?.scheduledStartTime ?? '').localeCompare(b.snippet?.scheduledStartTime ?? ''));
-			const snippet = broadcasts[0]?.snippet;
+			const broadcast = broadcasts[0];
+			const snippet = broadcast?.snippet;
 			if (snippet?.liveChatId) {
-				return { liveChatId: snippet.liveChatId, title: snippet.title || 'YouTube' };
+				return { liveChatId: snippet.liveChatId, title: snippet.title || 'YouTube', videoId: broadcast.id || undefined };
 			}
 		}
 		return { wait: 'No live or upcoming broadcast on your channel. Checking again every minute.' };

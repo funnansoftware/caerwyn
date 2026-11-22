@@ -46,6 +46,7 @@ export class ChatWebview implements vscode.Disposable {
 				this.post({ type: 'sources', sources });
 			}),
 			service.onReset(() => this.post({ type: 'reset' })),
+			service.onViewerCounts((viewers) => this.post({ type: 'viewers', viewers })),
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				if (event.affectsConfiguration('caerwyn')) {
 					this.post({ type: 'settings', settings: viewSettings() });
@@ -72,7 +73,13 @@ export class ChatWebview implements vscode.Disposable {
 		// The webview is hidden and rebuilt as it is switched away from; it asks for the current state each time.
 		if (message?.type === 'ready') {
 			ChatWebview.readyCount++;
-			this.post({ type: 'init', messages: this.service.messages, sources: this.service.sources, settings: viewSettings() });
+			this.post({
+				type: 'init',
+				messages: this.service.messages,
+				sources: this.service.sources,
+				viewers: this.service.viewerCounts,
+				settings: viewSettings(),
+			});
 		} else if (message?.type === 'action' && VIEW_ACTIONS.includes(message.action as ViewAction)) {
 			void vscode.commands.executeCommand(`caerwyn.${message.action}`);
 		} else if (message?.type === 'moderate' && Number.isSafeInteger(message.requestId)) {

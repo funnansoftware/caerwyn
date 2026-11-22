@@ -13,6 +13,7 @@ import {
 	SourceInfo,
 	SourceStatus,
 	TwitchSource,
+	ViewerCounts,
 	YouTubeSource,
 } from './types';
 import { YouTubeChat, YouTubeTransport } from './youtube/youtubeChat';
@@ -57,13 +58,19 @@ export class ChatService {
 	private readonly eventsEmitter = new Emitter<ChatEvent[]>();
 	private readonly sourcesEmitter = new Emitter<SourceInfo[]>();
 	private readonly resetEmitter = new Emitter<void>();
+	private readonly viewerCountsEmitter = new Emitter<ViewerCounts>();
 	readonly onEvents = this.eventsEmitter.event;
 	readonly onSources = this.sourcesEmitter.event;
 	readonly onReset = this.resetEmitter.event;
+	/** Fires with every source's current viewer count whenever one changes. */
+	readonly onViewerCounts = this.viewerCountsEmitter.event;
 
 	private sourceList: RealSource[];
 	private readonly statuses = new Map<string, SourceStatus>();
 	private readonly labels = new Map<string, string>();
+	/** Each live source's viewer count. (`viewers` is something else: how many chat views are open.) */
+	private readonly audience = new Map<string, number>();
+	private audienceTimer: NodeJS.Timeout | undefined;
 	private buffer: ChatMessage[] = [];
 	private readonly keys = new Set<string>();
 	private pending: ChatEvent[] = [];
@@ -84,6 +91,7 @@ export class ChatService {
 		this.sink = {
 			event: (event) => this.onEvent(event),
 			status: (sourceId, status, label) => this.onStatus(sourceId, status, label),
+			viewers: (sourceId, count) => this.onViewers(sourceId, count),
 			log: options.log,
 		};
 		this.subscriptions = [
@@ -112,6 +120,11 @@ export class ChatService {
 			status: this.statuses.get(source.id) ?? { state: 'idle' },
 			canModerate: source.kind === 'simulated',
 		}));
+	}
+
+	/** How many people watch each source that is live and shares its count. */
+	get viewerCounts(): ViewerCounts {
+		return Object.fromEntries(this.audience);
 	}
 
 	/**
@@ -156,6 +169,7 @@ export class ChatService {
 		this.disposeConnections('twitch');
 		this.disposeConnections('youtube');
 		this.statuses.clear();
+		this.forgetViewers([...this.audience.keys()]);
 		this.sourcesEmitter.fire(this.sources);
 	}
 
@@ -179,6 +193,7 @@ export class ChatService {
 		this.sourceList = this.sourceList.filter((existing) => existing.id !== sourceId);
 		this.statuses.delete(sourceId);
 		this.labels.delete(sourceId);
+		this.forgetViewers([sourceId]);
 		await this.options.state.update(SOURCES_KEY, this.sourceList);
 		this.sourcesEmitter.fire(this.sources);
 		this.scheduleRebuild(source.platform);
@@ -202,6 +217,7 @@ export class ChatService {
 			for (const source of SIMULATED_SOURCES) {
 				this.statuses.delete(source.id);
 			}
+			this.forgetViewers(SIMULATED_SOURCES.map((source) => source.id));
 			// Simulated chat must never linger next to real chat.
 			simulatedClearEvents().forEach((event) => this.onEvent(event));
 		}
@@ -264,12 +280,14 @@ export class ChatService {
 	dispose(): void {
 		this.stop();
 		clearTimeout(this.flushTimer);
+		clearTimeout(this.audienceTimer);
 		for (const subscription of this.subscriptions) {
 			subscription.dispose();
 		}
 		this.eventsEmitter.dispose();
 		this.sourcesEmitter.dispose();
 		this.resetEmitter.dispose();
+		this.viewerCountsEmitter.dispose();
 	}
 
 	/** Coalesces rebuilds, so signing in and adding the account's own source reconnects only once. */
@@ -323,6 +341,8 @@ export class ChatService {
 	}
 
 	private disposeConnections(platform: Platform): void {
+		// Disposed connections stay quiet, so they cannot clear the counts they reported.
+		this.forgetViewers(this.sourceList.filter((source) => source.platform === platform).map((source) => source.id));
 		if (platform === 'twitch') {
 			this.twitch?.dispose();
 			this.twitch = undefined;
@@ -343,6 +363,36 @@ export class ChatService {
 			this.labels.set(sourceId, label);
 		}
 		this.sourcesEmitter.fire(this.sources);
+	}
+
+	private onViewers(sourceId: string, count: number | undefined): void {
+		if (count === undefined) {
+			this.forgetViewers([sourceId]);
+			return;
+		}
+		if (!this.allSources.some((source) => source.id === sourceId) || this.audience.get(sourceId) === count) {
+			return;
+		}
+		this.audience.set(sourceId, count);
+		this.scheduleViewerCounts();
+	}
+
+	private forgetViewers(sourceIds: string[]): void {
+		let changed = false;
+		for (const id of sourceIds) {
+			changed = this.audience.delete(id) || changed;
+		}
+		if (changed) {
+			this.scheduleViewerCounts();
+		}
+	}
+
+	/** Coalesces counts that arrive together, such as every Twitch channel from one request. */
+	private scheduleViewerCounts(): void {
+		this.audienceTimer ??= setTimeout(() => {
+			this.audienceTimer = undefined;
+			this.viewerCountsEmitter.fire(this.viewerCounts);
+		}, FLUSH_MS);
 	}
 
 	private onEvent(event: ChatEvent): void {

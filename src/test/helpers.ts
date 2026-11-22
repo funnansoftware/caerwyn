@@ -5,6 +5,8 @@ export class RecordingSink implements ChatSink {
 	readonly events: ChatEvent[] = [];
 	readonly statuses = new Map<string, SourceStatus>();
 	readonly labels = new Map<string, string>();
+	/** Every viewer count reported, in order, by source ID. */
+	readonly viewerReports = new Map<string, (number | undefined)[]>();
 	readonly logs: string[] = [];
 
 	event(event: ChatEvent): void {
@@ -18,12 +20,23 @@ export class RecordingSink implements ChatSink {
 		}
 	}
 
+	viewers(sourceId: string, count: number | undefined): void {
+		const reports = this.viewerReports.get(sourceId) ?? [];
+		reports.push(count);
+		this.viewerReports.set(sourceId, reports);
+	}
+
 	log(message: string): void {
 		this.logs.push(message);
 	}
 
 	state(sourceId: string): string | undefined {
 		return this.statuses.get(sourceId)?.state;
+	}
+
+	/** The most recent viewer count reported for a source. */
+	viewerCount(sourceId: string): number | undefined {
+		return this.viewerReports.get(sourceId)?.at(-1);
 	}
 }
 

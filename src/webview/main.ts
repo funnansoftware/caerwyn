@@ -1,5 +1,5 @@
 import { formatDuration, type ModerationAction } from '../chat/moderation';
-import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, Platform, Role, SourceInfo } from '../chat/types';
+import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, Platform, Role, SourceInfo, ViewerCounts } from '../chat/types';
 import type { HostMessage, ViewAction, ViewSettings, WebviewMessage } from '../panel/protocol';
 import { platformLogo } from './logos';
 
@@ -69,13 +69,34 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
 	return node;
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A line icon drawn in the current text colour, so it follows the theme. Built as DOM: the CSP allows no icon font. */
+function lineIcon(d: string): SVGSVGElement {
+	const svg = document.createElementNS(SVG_NS, 'svg');
+	svg.setAttribute('viewBox', '0 0 16 16');
+	svg.setAttribute('aria-hidden', 'true');
+	svg.classList.add('icon');
+	const path = document.createElementNS(SVG_NS, 'path');
+	path.setAttribute('d', d);
+	svg.append(path);
+	return svg;
+}
+
+/** An eye: the outline, then the pupil. */
+const EYE_ICON = 'M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8ZM8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z';
+
 const root = document.getElementById('root') as HTMLElement;
 const header = el('header', 'header');
+const viewersBar = el('div', 'viewers');
+viewersBar.hidden = true;
+viewersBar.setAttribute('role', 'group');
+viewersBar.setAttribute('aria-label', 'Viewers');
 const sourcesBar = el('div', 'sources');
 const filterBar = el('div', 'filters');
 filterBar.setAttribute('role', 'toolbar');
 filterBar.setAttribute('aria-label', 'Show messages from');
-header.append(sourcesBar, filterBar);
+header.append(viewersBar, sourcesBar, filterBar);
 const log = el('main', 'log');
 const empty = el('div', 'empty');
 const jump = el('button', 'jump');
@@ -88,6 +109,7 @@ root.append(header, log, empty, jump, card);
 
 let settings: ViewSettings = { maxMessages: 500, showTimestamps: false };
 let sources: SourceInfo[] = [];
+let viewerCounts: ViewerCounts = {};
 let stick = true;
 let unseen = 0;
 let platformFilter: PlatformFilter = (() => {
@@ -361,9 +383,54 @@ function renderSources(): void {
 		}
 		sourcesBar.append(chip);
 	}
+	renderViewers();
 	renderFilters();
 	updateEmpty();
 	refreshCard();
+}
+
+const exactCount = new Intl.NumberFormat();
+const compactCount = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+
+/** Large audiences are shortened to fit the header (12.3K); the tooltip has the exact figure. */
+function shortCount(count: number): string {
+	return count >= 10_000 ? compactCount.format(count) : exactCount.format(count);
+}
+
+/**
+ * Each platform's audience, summed over its sources that are live. A platform with no live source is left out
+ * rather than shown as 0, which would read as a live stream nobody is watching. The platform filter does not
+ * apply: it narrows the chat, not the audience.
+ */
+function renderViewers(): void {
+	const items: HTMLElement[] = [];
+	for (const platform of ['twitch', 'youtube'] as const) {
+		const counted = sources
+			.filter((info) => info.source.platform === platform)
+			.map((info) => ({ label: info.label, count: viewerCounts[info.source.id] }))
+			.filter((entry): entry is { label: string; count: number } => typeof entry.count === 'number');
+		if (counted.length === 0) {
+			continue;
+		}
+		const total = counted.reduce((sum, entry) => sum + entry.count, 0);
+		const name = platformName(platform);
+		const item = el('span', `viewer-count ${platform}`);
+		item.append(platformLogo(platform), el('span', 'viewer-number', shortCount(total)));
+		item.setAttribute('role', 'img');
+		item.setAttribute('aria-label', `${exactCount.format(total)} watching on ${name}`);
+		const lines = [`${name}: ${exactCount.format(total)} watching`];
+		if (counted.length > 1) {
+			lines.push(...counted.map((entry) => `${entry.label}: ${exactCount.format(entry.count)}`));
+		}
+		item.title = lines.join('\n');
+		items.push(item);
+	}
+	viewersBar.hidden = items.length === 0;
+	if (items.length === 0) {
+		viewersBar.replaceChildren();
+		return;
+	}
+	viewersBar.replaceChildren(lineIcon(EYE_ICON), ...items);
 }
 
 const FILTER_OPTIONS: [PlatformFilter, string][] = [
@@ -469,6 +536,7 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
 			applySettings(message.settings);
 			reset();
 			sources = message.sources;
+			viewerCounts = message.viewers;
 			renderSources();
 			appendMessages(message.messages);
 			break;
@@ -478,6 +546,10 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
 		case 'sources':
 			sources = message.sources;
 			renderSources();
+			break;
+		case 'viewers':
+			viewerCounts = message.viewers;
+			renderViewers();
 			break;
 		case 'settings':
 			applySettings(message.settings);
@@ -703,19 +775,9 @@ function onModerationResult(requestId: number, error: string | undefined): void 
 	refreshCard();
 }
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
-
-/** A trash can drawn in the current text colour, so it follows the theme. Built as DOM: the CSP allows no icon font. */
 function trashIcon(): SVGSVGElement {
-	const svg = document.createElementNS(SVG_NS, 'svg');
-	svg.setAttribute('viewBox', '0 0 16 16');
-	svg.setAttribute('aria-hidden', 'true');
-	svg.classList.add('icon');
-	const path = document.createElementNS(SVG_NS, 'path');
 	// Lid, handle, can, and two ribs.
-	path.setAttribute('d', 'M2.5 4h11M6 4V2.5h4V4M3.75 4l.75 9.5h7l.75-9.5M6.5 6.5v4.5M9.5 6.5v4.5');
-	svg.append(path);
-	return svg;
+	return lineIcon('M2.5 4h11M6 4V2.5h4V4M3.75 4l.75 9.5h7l.75-9.5M6.5 6.5v4.5M9.5 6.5v4.5');
 }
 
 function renderHistory(target: CardTarget, allowed: boolean, busy: boolean): void {

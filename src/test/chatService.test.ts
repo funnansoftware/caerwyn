@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ChatService, PlatformAuth, StateStore } from '../chat/chatService';
-import { ChatEvent, ChatMessage, ChatSink, NotSignedInError, TWITCH_SELF, YOUTUBE_SELF } from '../chat/types';
+import { ChatEvent, ChatMessage, ChatSink, NotSignedInError, TWITCH_SELF, ViewerCounts, YOUTUBE_SELF } from '../chat/types';
 import { delay, waitFor } from './helpers';
 
 class MemoryState implements StateStore {
@@ -89,6 +89,47 @@ suite('ChatService', () => {
 		await waitFor(() => batches.length > 0, 'a batch');
 		assert.strictEqual(batches.length, 1);
 		assert.strictEqual(batches[0].length, 4, 'the duplicate is not forwarded');
+	});
+
+	test('keeps viewer counts for known sources, reports changes together, and forgets a source’s count with it', async () => {
+		await service.addSource(TWITCH_SELF);
+		const sink = (service as unknown as { sink: ChatSink }).sink;
+		const fired: ViewerCounts[] = [];
+		service.onViewerCounts((counts) => fired.push(counts));
+
+		sink.viewers('twitch:me', 10);
+		sink.viewers('twitch:me', 12);
+		sink.viewers('youtube:unknown', 5);
+		await waitFor(() => fired.length > 0, 'the counts');
+		await delay(100);
+		assert.deepStrictEqual(fired, [{ 'twitch:me': 12 }], 'one update, without the unknown source');
+		assert.deepStrictEqual(service.viewerCounts, { 'twitch:me': 12 });
+
+		sink.viewers('twitch:me', 12);
+		await delay(100);
+		assert.strictEqual(fired.length, 1, 'an unchanged count is not reported again');
+
+		await service.removeSource('twitch:me');
+		await waitFor(() => fired.length === 2, 'the count to go with its source');
+		assert.deepStrictEqual(fired[1], {});
+	});
+
+	test('simulated viewers appear with simulated chat and go when it is switched off or the last view closes', async () => {
+		simulation.enabled = true;
+		service.refreshConfig();
+		const view = service.acquire();
+		await waitFor(() => Object.keys(service.viewerCounts).length === 2, 'both simulated counts');
+		assert.ok(Object.values(service.viewerCounts).every((count) => count > 0));
+
+		simulation.enabled = false;
+		service.refreshConfig();
+		assert.deepStrictEqual(service.viewerCounts, {});
+
+		simulation.enabled = true;
+		service.refreshConfig();
+		await waitFor(() => Object.keys(service.viewerCounts).length === 2, 'the counts to return');
+		view.dispose();
+		assert.deepStrictEqual(service.viewerCounts, {});
 	});
 
 	test('simulated chat appears as its own sources, feeds the history, and leaves nothing behind when switched off', async () => {

@@ -136,6 +136,22 @@ suite('SimulatedChat', () => {
 		assert.strictEqual(sink.events.length, count);
 	});
 
+	test('reports an audience for each stream once started, and raiders join it', () => {
+		const { sink, chat } = simulator();
+		chat.emit('twitchRaid');
+		assert.strictEqual(sink.viewerReports.size, 0, 'no audience before the simulation starts');
+
+		chat.start();
+		const before = sink.viewerCount('twitch:simulated') ?? 0;
+		assert.ok(before > 0 && (sink.viewerCount('youtube:simulated') ?? 0) > 0);
+		sink.events.length = 0;
+		chat.emit('twitchRaid');
+		const raid = messages(sink.events)[0];
+		const raiders = Number(/^(\d+) raiders/.exec(raid.headline ?? '')?.[1]);
+		assert.strictEqual(sink.viewerCount('twitch:simulated'), before + raiders);
+		chat.dispose();
+	});
+
 	test('recognises requestable event names', () => {
 		for (const entry of [...SIMULATED_EVENTS, ...SIMULATED_ACTIONS]) {
 			assert.ok(isSimulatedEventKind(entry.kind));

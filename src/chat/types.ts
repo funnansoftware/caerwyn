@@ -97,10 +97,15 @@ export interface SourceInfo {
 	canModerate: boolean;
 }
 
+/** How many people are watching each source's stream, by source ID. A source that is not live, or hides its count, is absent. */
+export type ViewerCounts = Record<string, number>;
+
 /** Where chat connections report what happens. */
 export interface ChatSink {
 	event(event: ChatEvent): void;
 	status(sourceId: string, status: SourceStatus, label?: string): void;
+	/** The stream's current audience; `undefined` when it is not live or the platform does not say. */
+	viewers(sourceId: string, count: number | undefined): void;
 	log(message: string): void;
 }
 

@@ -114,6 +114,8 @@ const BURST_SIZE = 50;
 /** How often to look at the rate again while it is zero. */
 const IDLE_CHECK_MS = 500;
 const RECONNECT_MS = 2500;
+/** How often the simulated audience changes. Faster than the real platforms, so the display can be seen moving. */
+const VIEWER_UPDATE_MS = 5000;
 
 let idCounter = 0;
 
@@ -146,11 +148,16 @@ interface Recent {
 
 export class SimulatedChat {
 	private readonly random: () => number;
+	/** Kept apart from `random`, so the audience drifting on its timer cannot change which chat a seed produces. */
+	private readonly viewerRandom: () => number;
 	private readonly now: () => number;
 	private readonly session: string;
 	private readonly recent: Record<Platform, Recent[]> = { twitch: [], youtube: [] };
+	/** Each simulated stream's viewer count, once started. */
+	private readonly audience: Partial<Record<Platform, number>> = {};
 	private timer: NodeJS.Timeout | undefined;
 	private reconnectTimer: NodeJS.Timeout | undefined;
+	private viewerTimer: NodeJS.Timeout | undefined;
 	private disposed = false;
 	/** Set while the showcase plays. */
 	private staged = false;
@@ -158,7 +165,9 @@ export class SimulatedChat {
 	private readonly blocked = new Map<string, number>();
 
 	constructor(private readonly options: SimulatedChatOptions) {
-		this.random = seededRandom(options.seed ?? Date.now());
+		const seed = options.seed ?? Date.now();
+		this.random = seededRandom(seed);
+		this.viewerRandom = seededRandom(seed ^ 0x9e3779b9);
 		this.now = options.now ?? Date.now;
 		// Message IDs must stay unique across simulator instances: history is de-duplicated by ID.
 		this.session = Date.now().toString(36);
@@ -167,6 +176,11 @@ export class SimulatedChat {
 	start(): void {
 		this.options.sink.status(SIMULATED_TWITCH.id, { state: 'connected' }, `Simulated Twitch`);
 		this.options.sink.status(SIMULATED_YOUTUBE.id, { state: 'connected' }, `Simulated YouTube`);
+		this.audience.twitch = 800 + Math.floor(this.viewerRandom() * 700);
+		this.audience.youtube = 250 + Math.floor(this.viewerRandom() * 400);
+		this.reportViewers('twitch');
+		this.reportViewers('youtube');
+		this.scheduleViewers();
 		this.schedule();
 	}
 
@@ -174,6 +188,7 @@ export class SimulatedChat {
 		this.disposed = true;
 		clearTimeout(this.timer);
 		clearTimeout(this.reconnectTimer);
+		clearTimeout(this.viewerTimer);
 	}
 
 	/** Forgets the messages sent so far, so later removals and replies only target what is still on screen. */
@@ -299,7 +314,13 @@ export class SimulatedChat {
 				break;
 			case 'twitchRaid': {
 				const chatter = this.twitchChatter();
-				this.twitchNotice(chatter, 'raid', `${this.int(3, 250)} raiders from ${chatter.name} have joined!`);
+				const raiders = this.int(3, 250);
+				this.twitchNotice(chatter, 'raid', `${raiders} raiders from ${chatter.name} have joined!`);
+				// Raiders arrive as viewers too.
+				if (this.audience.twitch !== undefined) {
+					this.audience.twitch += raiders;
+					this.reportViewers('twitch');
+				}
 				break;
 			}
 			case 'twitchAnnouncement':
@@ -381,6 +402,30 @@ export class SimulatedChat {
 			}
 			this.schedule();
 		}, delay);
+	}
+
+	/** Lets each audience wander a few percent either way, drifting slightly upward like a stream finding its crowd. */
+	private scheduleViewers(): void {
+		this.viewerTimer = setTimeout(() => {
+			if (this.disposed) {
+				return;
+			}
+			for (const platform of ['twitch', 'youtube'] as const) {
+				const current = this.audience[platform];
+				if (current !== undefined) {
+					const change = Math.round(current * (this.viewerRandom() - 0.48) * 0.05);
+					this.audience[platform] = Math.max(0, current + change);
+					this.reportViewers(platform);
+				}
+			}
+			this.scheduleViewers();
+		}, VIEWER_UPDATE_MS);
+	}
+
+	private reportViewers(platform: Platform): void {
+		if (!this.disposed) {
+			this.options.sink.viewers(platform === 'twitch' ? SIMULATED_TWITCH.id : SIMULATED_YOUTUBE.id, this.audience[platform]);
+		}
 	}
 
 	private weighted(): SimulatedEventKind {

@@ -1,5 +1,5 @@
 import type { ModerationRequest } from '../chat/moderation';
-import type { ChatEvent, ChatMessage, SourceInfo } from '../chat/types';
+import type { ChatEvent, ChatMessage, SourceInfo, ViewerCounts } from '../chat/types';
 
 // Messages exchanged between the extension host and the chat webview. The webview imports only types from here.
 
@@ -9,9 +9,11 @@ export interface ViewSettings {
 }
 
 export type HostMessage =
-	| { type: 'init'; messages: readonly ChatMessage[]; sources: SourceInfo[]; settings: ViewSettings }
+	| { type: 'init'; messages: readonly ChatMessage[]; sources: SourceInfo[]; viewers: ViewerCounts; settings: ViewSettings }
 	| { type: 'events'; events: ChatEvent[] }
 	| { type: 'sources'; sources: SourceInfo[] }
+	/** Kept apart from `sources` because it changes far more often, and must not rebuild the source chips. */
+	| { type: 'viewers'; viewers: ViewerCounts }
 	| { type: 'settings'; settings: ViewSettings }
 	| { type: 'reset' }
 	/** The outcome of a `moderate` request: no `error` means it was carried out. */
