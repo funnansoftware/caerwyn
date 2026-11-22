@@ -198,6 +198,9 @@ export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timesta
 	if (event.message_type === 'channel_points_highlighted') {
 		message.highlighted = true;
 	}
+	if (event.message_type === 'user_intro') {
+		message.firstTime = true;
+	}
 	if (event.reply?.parent_user_name) {
 		message.replyTo = { name: event.reply.parent_user_name, text: event.reply.parent_message_body ?? '' };
 	}

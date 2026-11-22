@@ -49,6 +49,11 @@ body.view {
 	outline-offset: -1px;
 }
 
+.vscode-high-contrast .msg.first-time {
+	outline: 2px solid var(--vscode-contrastActiveBorder, var(--vscode-contrastBorder, currentColor));
+	outline-offset: -2px;
+}
+
 /* Header: connected sources, then the platform filter */
 
 .header {
@@ -238,6 +243,25 @@ body.view {
 .msg.highlighted {
 	border-left-width: 5px;
 	background: color-mix(in srgb, var(--platform) 30%, transparent);
+}
+
+/*
+ * A viewer's first message in the channel: a ring around the whole row instead of the notice's left bar.
+ * An outline drawn inside the row, so the text lines up with its neighbours and nothing clips it.
+ */
+.msg.first-time {
+	--first-time: var(--platform);
+	margin: 4px 0;
+	border-left-color: transparent;
+	border-radius: 4px;
+	outline: 2px solid var(--first-time);
+	outline-offset: -2px;
+	background: color-mix(in srgb, var(--first-time) 12%, transparent);
+}
+
+.msg.first-time .headline::before {
+	content: "✦ ";
+	color: var(--first-time);
 }
 
 .headline {

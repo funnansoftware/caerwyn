@@ -103,6 +103,8 @@ export interface ChatMessage {
 	spent?: Spent[];
 	/** The viewer paid to make this message stand out, such as Twitch's "Highlight My Message". */
 	highlighted?: boolean;
+	/** The viewer's first message in this channel's chat, as the platform reports it (Twitch's "First-time chat"). */
+	firstTime?: boolean;
 	/** Set on a message AutoMod held for review, rather than one in chat. */
 	held?: HeldMessage;
 	/** A `/me` style message. */

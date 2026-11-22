@@ -54,6 +54,7 @@ export const SIMULATED_EVENTS = [
 	{ kind: 'longMessage', label: 'Long message' },
 	{ kind: 'twitchCheer', label: 'Twitch: cheer' },
 	{ kind: 'twitchHighlight', label: 'Twitch: message highlighted with channel points' },
+	{ kind: 'twitchFirstTime', label: 'Twitch: first-time chatter' },
 	{ kind: 'twitchCelebration', label: 'Twitch: on-screen celebration with Bits' },
 	{ kind: 'twitchAutomodHold', label: 'Twitch: message held by AutoMod' },
 	{ kind: 'twitchSub', label: 'Twitch: new subscription' },
@@ -99,6 +100,7 @@ const AUTOMATIC_MIX: [SimulatedEventKind, number][] = [
 	['longMessage', 1.5],
 	['twitchCheer', 1],
 	['twitchHighlight', 0.5],
+	['twitchFirstTime', 0.6],
 	['twitchCelebration', 0.2],
 	['twitchAutomodHold', 0.2],
 	['twitchSub', 0.8],
@@ -322,6 +324,11 @@ export class SimulatedChat {
 				this.send({ type: 'update', message: mapChatMessage(event, SIMULATED_TWITCH.id, message.timestamp, spent) });
 				break;
 			}
+			case 'twitchFirstTime':
+				this.twitchChat(this.twitchChatter(), this.pick(['first time here, loving the stream', 'hi everyone, just found this channel', 'hello! been lurking, finally saying hi']), {
+					message_type: 'user_intro',
+				});
+				break;
 			case 'twitchAutomodHold': {
 				const chatter = this.twitchChatter();
 				const text = this.pick(['nobody asked, go touch grass', 'this stream is so bad lol', 'ur code looks like spaghetti']);

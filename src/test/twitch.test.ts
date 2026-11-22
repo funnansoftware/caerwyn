@@ -94,10 +94,18 @@ suite('Twitch mapping', () => {
 		assert.strictEqual(both.headline, 'Cheered · Highlighted');
 		assert.deepStrictEqual(both.spent, [{ currency: 'bits', amount: 1 }, { currency: 'points' }], 'each in the order of its label');
 
+		const intro = mapChatMessage({ ...chatEvent, message_type: 'user_intro' }, 'twitch:me', 0);
+		assert.strictEqual(intro.headline, 'First time in chat');
+		assert.strictEqual(intro.firstTime, true);
+		assert.strictEqual(intro.highlighted, undefined);
+		assert.strictEqual(intro.spent, undefined, 'a first message costs nothing');
+		assert.strictEqual(highlighted.firstTime, undefined);
+
 		for (const message_type of ['text', 'some_future_type']) {
 			const plain = mapChatMessage({ ...chatEvent, message_type }, 'twitch:me', 0);
 			assert.strictEqual(plain.headline, undefined, message_type);
 			assert.strictEqual(plain.highlighted, undefined, message_type);
+			assert.strictEqual(plain.firstTime, undefined, message_type);
 			assert.strictEqual(plain.spent, undefined, message_type);
 		}
 	});

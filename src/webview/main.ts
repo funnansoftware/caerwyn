@@ -220,6 +220,9 @@ function renderMessage(message: ChatMessage): HTMLElement {
 	if (message.highlighted) {
 		row.classList.add('highlighted');
 	}
+	if (message.firstTime) {
+		row.classList.add('first-time');
+	}
 	if (message.action) {
 		row.classList.add('action-message');
 	}

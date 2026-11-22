@@ -44,6 +44,7 @@ suite('SimulatedChat', () => {
 
 		assert.ok(all.some((m) => m.action), 'an action message');
 		assert.ok(all.some((m) => m.highlighted), 'a highlighted message');
+		assert.ok(all.some((m) => m.firstTime && m.headline === 'First time in chat'), 'a first-time chatter');
 		const update = sink.events.find((e) => e.type === 'update');
 		assert.ok(update?.type === 'update' && update.message.highlighted, 'the highlight\'s cost arrives as an update');
 		assert.strictEqual(update.message.headline, 'Highlighted');
