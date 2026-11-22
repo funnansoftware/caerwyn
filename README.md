@@ -48,11 +48,14 @@ After signing in, the chat tab opens and shows your own channel (Twitch) or your
 | Caerwyn: Add YouTube Stream… | Adds another live stream's chat by URL or video ID. |
 | Caerwyn: Remove Chat Source… | Removes a chat from the tab. |
 | Caerwyn: Reconnect | Reconnects every chat. |
-| Caerwyn: Clear Chat | Empties the tab. |
+| Caerwyn: Clear Chat | Empties the tab. Saved history is kept. |
+| Caerwyn: Delete Saved Chat History… | Deletes every message saved for user cards. |
 
 The chat also lives in the **Caerwyn** view in the activity bar. The tab and the sidebar view show the same chat, and you can use either or both. Drag the view to the secondary sidebar or the bottom panel if you prefer it there.
 
 Chat is only read while the chat tab or the sidebar view is open. Closing the last one disconnects.
+
+Click a name to open that viewer's user card. It lists everything they have said in that channel, grouped by day, with the day's date kept at the top as you scroll. Scroll up to load older messages. Neither Twitch nor YouTube lets Caerwyn read past chat, so the card shows only messages Caerwyn has read itself. They are saved on this computer, up to 5,000 per viewer per channel. A YouTube card covers every broadcast from the same source. Removed messages show as *message deleted*, and simulated chat is never saved.
 
 ### Settings
 
@@ -60,6 +63,7 @@ Chat is only read while the chat tab or the sidebar view is open. Closing the la
 | --- | --- | --- |
 | `caerwyn.maxMessages` | `500` | How many recent messages to keep and show. |
 | `caerwyn.showTimestamps` | `false` | Shows the time next to each message. |
+| `caerwyn.history.enabled` | `true` | Saves chat on this computer so user cards show earlier streams. Turning it off stops saving; what is already saved stays until you delete it. |
 | `caerwyn.youtube.transport` | `stream` | `stream` keeps one connection open. `poll` asks for new messages every few seconds and uses quota on every request; use it only if streaming does not work. |
 
 Problems are logged to the **Caerwyn** output channel.
@@ -98,5 +102,6 @@ npm install
 - `src/chat/twitch/` reads Twitch chat through EventSub over WebSocket.
 - `src/chat/youtube/` reads YouTube chat through the Data API's streaming method.
 - `src/chat/simulation/` produces simulated chat. `sampleData.ts` holds the made-up chatters and lines; `simulatedChat.ts` lists every event it can produce.
-- `src/chat/chatService.ts` owns the list of chat sources, their connections and the recent message history. Both platforms are mapped to the types in `src/chat/types.ts`.
+- `src/chat/chatService.ts` owns the list of chat sources, their connections and the recent message history.
+- `src/chat/history.ts` saves each viewer's messages to disk, one JSON Lines file per viewer per channel, for the user card. Both platforms are mapped to the types in `src/chat/types.ts`.
 - `src/panel/` hosts the chat tab, and `src/webview/` is the script and stylesheet that render it. The webview is type-checked separately because it runs in a browser context.

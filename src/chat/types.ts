@@ -141,6 +141,34 @@ export interface SourceInfo {
 /** How many people are watching each source's stream, by source ID. A source that is not live, or hides its count, is absent. */
 export type ViewerCounts = Record<string, number>;
 
+// A viewer's saved messages, for their user card. See `history.ts`.
+
+/** Who a history request is about, as the card knows them. */
+export interface HistoryQuery {
+	platform: Platform;
+	sourceId: string;
+	channelId: string;
+	userId: string;
+	/** Return the messages before this one. Absent for the newest page. */
+	before?: string;
+	limit: number;
+}
+
+export interface HistoryEntry {
+	/** A removed message carries no text: only its key, author and time. */
+	message: ChatMessage;
+	deleted: boolean;
+}
+
+export interface HistoryPage {
+	/** Oldest first. */
+	entries: HistoryEntry[];
+	/** Whether older messages remain. */
+	more: boolean;
+	/** How many messages are saved for this viewer in this room. */
+	total: number;
+}
+
 /** Where chat connections report what happens. */
 export interface ChatSink {
 	event(event: ChatEvent): void;

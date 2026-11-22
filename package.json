@@ -94,6 +94,11 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "caerwyn.clearHistory",
+        "title": "Delete Saved Chat History…",
+        "category": "Caerwyn"
+      },
+      {
         "command": "caerwyn.toggleSimulation",
         "title": "Toggle Simulated Chat",
         "category": "Caerwyn"
@@ -160,6 +165,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show the time next to each chat message."
+        },
+        "caerwyn.history.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Save chat messages on this computer, so a viewer's user card shows what they said in earlier streams, grouped by day. Only chat Caerwyn has read is saved; simulated chat never is. Run **Caerwyn: Delete Saved Chat History…** to remove it."
         },
         "caerwyn.youtube.transport": {
           "type": "string",

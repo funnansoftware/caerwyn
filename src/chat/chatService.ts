@@ -1,4 +1,5 @@
 import { Disposable, Emitter } from '../util/emitter';
+import { ChatHistory, HistoryPage, HistoryQuery } from './history';
 import { ModerationError, ModerationRequest } from './moderation';
 import { SIMULATED_SOURCES, SimulatedChat, SimulatedEventKind, simulatedClearEvents } from './simulation/simulatedChat';
 import { TwitchChat } from './twitch/twitchChat';
@@ -44,6 +45,8 @@ export interface ChatServiceOptions {
 	youtubeAuth: PlatformAuth;
 	getConfig(): ChatServiceConfig;
 	log(message: string): void;
+	/** Where each viewer's messages are saved for their user card. Without it, nothing is saved. */
+	history?: ChatHistory;
 }
 
 const SOURCES_KEY = 'caerwyn.sources';
@@ -289,6 +292,18 @@ export class ChatService {
 		return this.simulation;
 	}
 
+	/** A page of one viewer's saved messages. Simulated chat is never saved, so its pages are empty. */
+	async history(query: HistoryQuery): Promise<HistoryPage> {
+		if (!this.options.history || this.isSimulated(query.sourceId)) {
+			return { entries: [], more: false, total: 0 };
+		}
+		return this.options.history.page(query);
+	}
+
+	private isSimulated(sourceId: string): boolean {
+		return SIMULATED_SOURCES.some((source) => source.id === sourceId);
+	}
+
 	clearMessages(): void {
 		this.buffer = [];
 		this.keys.clear();
@@ -450,6 +465,7 @@ export class ChatService {
 				this.drop((message) => message.platform === event.platform && message.channelId === event.channelId);
 				break;
 		}
+		this.recordHistory(event);
 		this.pending.push(event);
 		this.flushTimer ??= setTimeout(() => {
 			this.flushTimer = undefined;
@@ -459,6 +475,14 @@ export class ChatService {
 				this.eventsEmitter.fire(events);
 			}
 		}, FLUSH_MS);
+	}
+
+	/** Saves real chat for the user card. Simulated chat must never be mistaken for real, so it is not saved. */
+	private recordHistory(event: ChatEvent): void {
+		if ((event.type === 'message' || event.type === 'update') && this.isSimulated(event.message.sourceId)) {
+			return;
+		}
+		this.options.history?.record(event);
 	}
 
 	/** Removed messages leave the buffer, so reopening the tab never shows them again. */

@@ -1,5 +1,5 @@
 import { formatDuration, type ModerationAction } from '../chat/moderation';
-import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, Platform, Role, SourceInfo, ViewerCounts } from '../chat/types';
+import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, HistoryEntry, HistoryPage, Platform, Role, SourceInfo, ViewerCounts } from '../chat/types';
 import type { HostMessage, ViewAction, ViewSettings, WebviewMessage } from '../panel/protocol';
 import { currencyIcon, platformLogo } from './logos';
 
@@ -470,6 +470,10 @@ function applyEvents(events: ChatEvent[]): void {
 			if (row) {
 				markDeleted(row);
 			}
+			const saved = savedHistory.get(event.key);
+			if (saved) {
+				savedHistory.set(event.key, { message: { ...saved.message, fragments: [] }, deleted: true });
+			}
 			continue;
 		}
 		if (event.type === 'update') {
@@ -491,6 +495,15 @@ function applyEvents(events: ChatEvent[]): void {
 		const channel = `${event.platform}:${event.channelId}`;
 		if (event.type === 'clear' && cardTarget && `${cardTarget.platform}:${cardTarget.channelId}` === channel) {
 			closeCard();
+		}
+		if (
+			event.type === 'purge' &&
+			cardTarget &&
+			`${cardTarget.platform}:${cardTarget.channelId}` === channel &&
+			cardTarget.author.id === event.userId
+		) {
+			// Saved messages the chat no longer shows were removed too; read them again rather than guess which.
+			requestHistory(cardTarget);
 		}
 		for (const [key, row] of rows) {
 			if (row.dataset.channel !== channel) {
@@ -706,6 +719,9 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
 		case 'moderationResult':
 			onModerationResult(message.requestId, message.error);
 			break;
+		case 'historyResult':
+			onHistoryResult(message.requestId, message.page);
+			break;
 	}
 });
 
@@ -735,6 +751,15 @@ let actionsShape = '';
 let historyShape = '';
 /** Set when a card opens, so its history first shows the clicked message rather than the newest one. */
 let scrollToCurrent = false;
+/** The open card's saved messages fetched so far, by key. Live chat is merged in when shown. */
+const savedHistory = new Map<string, HistoryEntry>();
+/** The oldest saved message fetched, which the next page is fetched before. */
+let oldestSaved: string | undefined;
+let savedMore = false;
+let savedTotal = 0;
+let savedFailed = false;
+/** The page being fetched for the open card, if any. Answers to any other request are ignored. */
+let historyRequest: number | undefined;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, { target: CardTarget; done: string }>();
 
@@ -767,7 +792,12 @@ function openCard(message: ChatMessage, opener: HTMLElement): void {
 		cardStatus = undefined;
 		setConfirmingBan(false);
 	}
+	const newUser = !cardTarget || !sameUser(cardTarget, next);
 	cardTarget = next;
+	if (newUser) {
+		forgetSavedHistory();
+		requestHistory(next);
+	}
 	cardOpener = opener;
 	actionsShape = '';
 	historyShape = '';
@@ -789,6 +819,7 @@ function closeCard(restoreFocus = false): void {
 	cardTarget = undefined;
 	cardStatus = undefined;
 	setConfirmingBan(false);
+	forgetSavedHistory();
 	card.hidden = true;
 	updateJump();
 	if (restoreFocus && cardOpener?.isConnected) {
@@ -932,65 +963,233 @@ function trashIcon(): SVGSVGElement {
 	return lineIcon('M2.5 4h11M6 4V2.5h4V4M3.75 4l.75 9.5h7l.75-9.5M6.5 6.5v4.5M9.5 6.5v4.5');
 }
 
+/** How many saved messages to fetch at a time, on top of what the chat already shows. */
+const HISTORY_PAGE = 100;
+/** How close to the top of the history, in pixels, fetches the next older page. */
+const HISTORY_PREFETCH = 120;
+
+function forgetSavedHistory(): void {
+	savedHistory.clear();
+	oldestSaved = undefined;
+	savedMore = false;
+	savedTotal = 0;
+	savedFailed = false;
+	historyRequest = undefined;
+}
+
+/** Fetches the newest saved page, or with `before`, the page before that message. */
+function requestHistory(target: CardTarget, before?: string): void {
+	const requestId = nextRequestId++;
+	historyRequest = requestId;
+	// The first page also covers what the chat shows, so scrolling up reaches older messages straight away.
+	// Asked again after a purge, it also re-reads everything loaded so far.
+	const loaded = before ? 0 : [...shown.values()].filter((message) => isTargetMessage(message, target)).length + savedHistory.size;
+	vscode.postMessage({
+		type: 'history',
+		requestId,
+		query: {
+			platform: target.platform,
+			sourceId: target.sourceId,
+			channelId: target.channelId,
+			userId: target.author.id,
+			before,
+			limit: HISTORY_PAGE + loaded,
+		},
+	});
+}
+
+function onHistoryResult(requestId: number, page: HistoryPage | undefined): void {
+	if (requestId !== historyRequest || !cardTarget) {
+		return;
+	}
+	historyRequest = undefined;
+	if (!page) {
+		savedFailed = true;
+		savedMore = false;
+	} else {
+		for (const entry of page.entries) {
+			savedHistory.set(entry.message.key, entry);
+		}
+		oldestSaved = page.entries[0]?.message.key ?? oldestSaved;
+		savedMore = page.more && page.entries.length > 0;
+		savedTotal = page.total;
+	}
+	refreshCard();
+}
+
+/** Fetches the next older page once the reader nears the top of what is loaded. */
+function fetchOlderIfNeeded(): void {
+	const target = cardTarget;
+	if (target && savedMore && historyRequest === undefined && oldestSaved && historyList.scrollTop < HISTORY_PREFETCH) {
+		requestHistory(target, oldestSaved);
+		refreshCard();
+	}
+}
+
+historyList.addEventListener('scroll', fetchOlderIfNeeded);
+
+interface HistoryItem {
+	message: ChatMessage;
+	deleted: boolean;
+	/** Still in the chat, so it can be moderated. */
+	live: boolean;
+}
+
+/** Saved messages and those in the chat now, oldest first. The chat's copy wins: it has the latest changes. */
+function historyItems(target: CardTarget): HistoryItem[] {
+	const items = new Map<string, HistoryItem>();
+	for (const [key, entry] of savedHistory) {
+		items.set(key, { message: entry.message, deleted: entry.deleted, live: false });
+	}
+	for (const message of shown.values()) {
+		if (isTargetMessage(message, target)) {
+			const deleted = rows.get(message.key)?.classList.contains('deleted') === true || items.get(message.key)?.deleted === true;
+			items.set(message.key, { message, deleted, live: true });
+		}
+	}
+	return [...items.values()].sort((a, b) => a.message.timestamp - b.message.timestamp);
+}
+
+/** The local calendar day a time falls on. */
+function dayKey(timestamp: number): string {
+	const date = new Date(timestamp);
+	return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
+const dayInYear = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+const dayWithYear = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+
+function dayLabel(timestamp: number): string {
+	const now = new Date();
+	const key = dayKey(timestamp);
+	if (key === dayKey(now.getTime())) {
+		return 'Today';
+	}
+	if (key === dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime())) {
+		return 'Yesterday';
+	}
+	const date = new Date(timestamp);
+	return (date.getFullYear() === now.getFullYear() ? dayInYear : dayWithYear).format(date);
+}
+
+/** The first message at least partly in view, and how far below the top of the list it sits. */
+function historyAnchor(): { key: string; offset: number } | undefined {
+	for (const item of historyList.querySelectorAll<HTMLElement>('.history-item')) {
+		if (item.offsetTop + item.offsetHeight > historyList.scrollTop) {
+			return { key: item.dataset.key ?? '', offset: item.offsetTop - historyList.scrollTop };
+		}
+	}
+	return undefined;
+}
+
+function renderHistoryItem(target: CardTarget, item: HistoryItem, allowed: boolean, busy: boolean): HTMLElement {
+	const { message, deleted } = item;
+	const row = el('div', 'history-item');
+	row.dataset.key = message.key;
+	if (message.key === target.messageKey) {
+		row.classList.add('current');
+	}
+	const text = el('div', 'history-text');
+	text.append(el('span', 'history-time', formatTime(message.timestamp)));
+	const body = el('span', 'body');
+	if (deleted) {
+		row.classList.add('deleted');
+		body.textContent = 'message deleted';
+	} else {
+		if (message.headline) {
+			const headline = el('span', 'history-headline', message.headline);
+			appendSpent(headline, message);
+			body.append(headline, ' ');
+		}
+		renderFragments(body, message.fragments);
+	}
+	text.append(body);
+	row.append(text);
+	// Only something the user wrote can be deleted; a bare sub or raid notice has nothing to remove.
+	// Platforms delete only recent messages, so saved ones no longer in the chat have no button.
+	if (item.live && !deleted && message.fragments.length > 0) {
+		const remove = cardButton('', 'history-delete', () =>
+			moderate(target, { type: 'delete', messageKey: message.key }, 'Message deleted.'),
+		);
+		remove.append(trashIcon());
+		remove.setAttribute('aria-label', 'Delete this message');
+		remove.title = allowed ? 'Delete this message' : `Moderating ${platformName(target.platform)} chat is not available yet.`;
+		remove.disabled = !allowed || busy;
+		row.append(remove);
+	}
+	return row;
+}
+
+/**
+ * The card's history, grouped by day under headers that stay in view while their day scrolls past. Saved pages
+ * load as the reader scrolls up, and the list keeps its place as they arrive and as the chat changes it.
+ */
 function renderHistory(target: CardTarget, allowed: boolean, busy: boolean): void {
-	const theirs = [...shown.values()].filter((message) => isTargetMessage(message, target));
-	const isDeleted = (message: ChatMessage) => rows.get(message.key)?.classList.contains('deleted') === true;
-	const shape = `${allowed}|${busy}|${theirs.map((message) => `${message.key}${isDeleted(message) ? '-' : ''}`).join(' ')}`;
+	const items = historyItems(target);
+	const loading = historyRequest !== undefined;
+	const shape = [
+		allowed,
+		busy,
+		loading,
+		savedFailed,
+		// Labels change at midnight: today's messages become yesterday's.
+		dayKey(Date.now()),
+		items.map((item) => `${item.message.key}${item.deleted ? '-' : ''}${item.live ? '' : '~'}`).join(' '),
+	].join('|');
 	if (shape === historyShape) {
 		return;
 	}
 	historyShape = shape;
-	historyTitle.textContent = theirs.length === 1 ? '1 recent message' : `${theirs.length} recent messages`;
+	const count = Math.max(savedTotal, items.length);
+	historyTitle.textContent = count === 1 ? '1 message' : `${exactCount.format(count)} messages`;
 	const atBottom = historyList.scrollHeight - historyList.scrollTop - historyList.clientHeight < STICK_THRESHOLD;
+	const anchor = historyAnchor();
 	historyList.replaceChildren();
+
+	if (savedFailed) {
+		historyList.append(el('p', 'card-note history-note', 'Their earlier messages could not be loaded.'));
+	} else if (loading && items.length > 0) {
+		historyList.append(el('p', 'card-note history-note', 'Loading earlier messages…'));
+	}
 	let current: HTMLElement | undefined;
-	for (const message of theirs) {
-		const item = el('div', 'history-item');
-		if (message.key === target.messageKey) {
-			item.classList.add('current');
-			current = item;
+	let anchorRow: HTMLElement | undefined;
+	let day = '';
+	let group: HTMLElement | undefined;
+	for (const item of items) {
+		const key = dayKey(item.message.timestamp);
+		if (!group || key !== day) {
+			day = key;
+			// Each day is its own block, so its header sticks only while that day is in view, and the next day's
+			// header pushes it out. The block stays unpositioned: rows' `offsetTop` is measured from the list.
+			group = el('section', 'history-day');
+			group.append(el('h3', 'history-date', dayLabel(item.message.timestamp)));
+			historyList.append(group);
 		}
-		const text = el('div', 'history-text');
-		text.append(el('span', 'history-time', formatTime(message.timestamp)));
-		const body = el('span', 'body');
-		const deleted = isDeleted(message);
-		if (deleted) {
-			item.classList.add('deleted');
-			body.textContent = 'message deleted';
-		} else {
-			if (message.headline) {
-				const headline = el('span', 'history-headline', message.headline);
-				appendSpent(headline, message);
-				body.append(headline, ' ');
-			}
-			renderFragments(body, message.fragments);
+		const row = renderHistoryItem(target, item, allowed, busy);
+		if (item.message.key === target.messageKey) {
+			current = row;
 		}
-		text.append(body);
-		item.append(text);
-		// Only something the user wrote can be deleted; a bare sub or raid notice has nothing to remove.
-		if (!deleted && message.fragments.length > 0) {
-			const remove = cardButton('', 'history-delete', () =>
-				moderate(target, { type: 'delete', messageKey: message.key }, 'Message deleted.'),
-			);
-			remove.append(trashIcon());
-			remove.setAttribute('aria-label', 'Delete this message');
-			remove.title = allowed ? 'Delete this message' : `Moderating ${platformName(target.platform)} chat is not available yet.`;
-			remove.disabled = !allowed || busy;
-			item.append(remove);
+		if (item.message.key === anchor?.key) {
+			anchorRow = row;
 		}
-		historyList.append(item);
+		group.append(row);
 	}
-	if (theirs.length === 0) {
-		historyList.append(el('p', 'card-note', 'None of their messages are in the chat now.'));
+	if (items.length === 0) {
+		historyList.append(el('p', 'card-note', loading ? 'Loading their messages…' : 'Caerwyn has no messages from them.'));
 	}
+
 	if (scrollToCurrent && current) {
 		// Centre the clicked message in the list without scrolling anything outside it.
 		// The list is the items' offset parent, so `offsetTop` is already relative to it.
 		historyList.scrollTop = current.offsetTop - (historyList.clientHeight - current.offsetHeight) / 2;
 	} else if (atBottom || scrollToCurrent) {
 		historyList.scrollTop = historyList.scrollHeight;
+	} else if (anchorRow && anchor) {
+		historyList.scrollTop = anchorRow.offsetTop - anchor.offset;
 	}
 	scrollToCurrent = false;
+	// A short history may not fill the list, which leaves nothing to scroll up with.
+	fetchOlderIfNeeded();
 }
 
 document.addEventListener('keydown', (event) => {

@@ -708,6 +708,33 @@ button:focus-visible {
 	overflow-wrap: anywhere;
 }
 
+/* One day of messages. It must stay unpositioned, so rows measure `offsetTop` from the list. */
+.history-day + .history-day {
+	margin-top: 4px;
+}
+
+/* A day's header stays at the top of the list while that day scrolls past. The next day's header pushes it out,
+   because a sticky header cannot leave its own day. */
+.history-date {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	margin: 0;
+	padding: 3px 4px;
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	/* Opaque, so rows scrolling underneath do not show through. */
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.8em;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+}
+
+.history-note {
+	padding: 2px 4px;
+	font-style: italic;
+}
+
 .history-item {
 	display: flex;
 	align-items: flex-start;

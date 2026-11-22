@@ -4,6 +4,7 @@ import { GoogleOAuth } from './auth/googleOAuth';
 import { SignInPlatform, signIn, signOut } from './auth/signIn';
 import { TwitchOAuth, validateTwitchToken } from './auth/twitchOAuth';
 import { ChatService } from './chat/chatService';
+import { ChatHistory } from './chat/history';
 import { SIMULATED_ACTIONS, SIMULATED_EVENTS, SimulatedEventKind, isSimulatedEventKind } from './chat/simulation/simulatedChat';
 import { Account, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, youtubeVideoSource } from './chat/types';
 import { parseVideoId } from './chat/youtube/videoId';
@@ -87,8 +88,14 @@ export function activate(context: vscode.ExtensionContext) {
 		codeEntry: true,
 	};
 
+	const history = new ChatHistory({
+		directory: vscode.Uri.joinPath(context.globalStorageUri, 'history').fsPath,
+		isEnabled: () => vscode.workspace.getConfiguration('caerwyn').get<boolean>('history.enabled', true),
+		log,
+	});
 	const service = new ChatService({
 		state: context.globalState,
+		history,
 		twitchAuth,
 		youtubeAuth,
 		getConfig: () => {
@@ -204,9 +211,23 @@ export function activate(context: vscode.ExtensionContext) {
 		service.simulate(kind);
 	};
 
+	const clearHistory = async () => {
+		const answer = await vscode.window.showWarningMessage(
+			'Delete every chat message Caerwyn has saved for user cards? Chat already on screen stays.',
+			{ modal: true },
+			'Delete',
+		);
+		if (answer === 'Delete') {
+			await history.clear();
+			void vscode.window.showInformationMessage('Saved chat history deleted.');
+		}
+	};
+
 	context.subscriptions.push(
 		output,
 		{ dispose: () => service.dispose() },
+		// After the service, so the last messages it handled are saved.
+		history,
 		vscode.commands.registerCommand('caerwyn.openChat', openChat),
 		vscode.commands.registerCommand('caerwyn.openChatSidebar', openSidebar),
 		vscode.window.registerWebviewViewProvider(CHAT_SIDEBAR_VIEW_ID, sidebar),
@@ -219,6 +240,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('caerwyn.removeSource', removeSource),
 		vscode.commands.registerCommand('caerwyn.reconnect', () => service.reconnect()),
 		vscode.commands.registerCommand('caerwyn.clearChat', () => service.clearMessages()),
+		vscode.commands.registerCommand('caerwyn.clearHistory', clearHistory),
 		vscode.commands.registerCommand('caerwyn.toggleSimulation', () => setSimulation(!service.isSimulating)),
 		vscode.commands.registerCommand('caerwyn.simulateEvent', simulateEvent),
 		vscode.workspace.onDidChangeConfiguration((event) => {

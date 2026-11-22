@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/chatService';
+import { parseHistoryQuery } from '../chat/history';
 import { parseModerationRequest } from '../chat/moderation';
 import { SourceInfo } from '../chat/types';
 import { HostMessage, VIEW_ACTIONS, ViewAction, ViewSettings, WebviewMessage } from './protocol';
@@ -84,6 +85,21 @@ export class ChatWebview implements vscode.Disposable {
 			void vscode.commands.executeCommand(`caerwyn.${message.action}`);
 		} else if (message?.type === 'moderate' && Number.isSafeInteger(message.requestId)) {
 			void this.moderate(message.requestId, message.request);
+		} else if (message?.type === 'history' && Number.isSafeInteger(message.requestId)) {
+			void this.history(message.requestId, message.query);
+		}
+	}
+
+	private async history(requestId: number, raw: unknown): Promise<void> {
+		const query = parseHistoryQuery(raw);
+		if (!query) {
+			this.post({ type: 'historyResult', requestId });
+			return;
+		}
+		try {
+			this.post({ type: 'historyResult', requestId, page: await this.service.history(query) });
+		} catch {
+			this.post({ type: 'historyResult', requestId });
 		}
 	}
 
