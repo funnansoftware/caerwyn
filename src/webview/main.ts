@@ -159,13 +159,34 @@ function renderFragments(target: HTMLElement, fragments: Fragment[]): void {
 	}
 }
 
-function appendBadges(target: HTMLElement, roles: Role[]): void {
-	for (const role of roles) {
-		const [label, title] = ROLE_LABELS[role];
-		const badge = el('span', `badge ${role}`, label);
-		badge.title = title;
-		target.append(badge);
+/** Badge pictures, then a label for each role no picture stands for (YouTube roles, or a badge Twitch did not describe). */
+function appendBadges(target: HTMLElement, author: ChatAuthor): void {
+	const pictured = new Set<Role>();
+	for (const badge of author.badges ?? []) {
+		const image = el('img', 'badge-image');
+		image.src = badge.url;
+		image.alt = badge.title;
+		image.title = badge.title;
+		// A picture that cannot load gives way to its role's label, or to nothing if it has no role.
+		const role = badge.role;
+		image.addEventListener('error', () => (role ? image.replaceWith(roleLabel(role)) : image.remove()), { once: true });
+		target.append(image);
+		if (role) {
+			pictured.add(role);
+		}
 	}
+	for (const role of author.roles) {
+		if (!pictured.has(role)) {
+			target.append(roleLabel(role));
+		}
+	}
+}
+
+function roleLabel(role: Role): HTMLElement {
+	const [label, title] = ROLE_LABELS[role];
+	const badge = el('span', `badge ${role}`, label);
+	badge.title = title;
+	return badge;
 }
 
 function platformTag(platform: Platform, channelName: string): HTMLElement {
@@ -207,7 +228,7 @@ function renderMessage(message: ChatMessage): HTMLElement {
 	}
 	const line = el('div', 'line');
 	line.append(el('span', 'time', formatTime(message.timestamp)), platformTag(message.platform, message.channelName));
-	appendBadges(line, message.author.roles);
+	appendBadges(line, message.author);
 
 	const author = el('button', 'author', message.author.name);
 	author.type = 'button';
@@ -780,7 +801,7 @@ function renderCardHeader(message: ChatMessage): void {
 	name.style.setProperty('--name', nameColor(message));
 	const who = el('div', 'card-who');
 	who.append(platformTag(message.platform, message.channelName));
-	appendBadges(who, author.roles);
+	appendBadges(who, author);
 	who.append(name);
 	if (author.login && author.login.toLowerCase() !== author.name.toLowerCase()) {
 		who.append(el('span', 'card-login', author.login));

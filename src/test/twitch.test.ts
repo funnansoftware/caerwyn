@@ -533,6 +533,22 @@ suite('TwitchChat', () => {
 		assert.strictEqual(subscriptions(auth)[17].transport.session_id, 'session-2');
 	});
 
+	test('loads badge pictures before connecting and puts them on messages', async () => {
+		const sink = new RecordingSink();
+		const badge = { set_id: 'moderator', versions: [{ id: '1', image_url_2x: 'https://static-cdn.jtvnw.net/badges/v1/mod/2', title: 'Moderator' }] };
+		const auth = new FakeAuth((url) => (url.endsWith('/chat/badges/global') ? json({ data: [badge] }) : helix(url)));
+		chat = new TwitchChat({ auth, sources: [TWITCH_SELF], sink, wsUrl: eventSub.url, helixUrl: 'https://helix.test' });
+		chat.start();
+		await waitFor(() => sink.state('twitch:me') === 'connected', 'the connection');
+		assert.ok(auth.requests.some((request) => request.url === 'https://helix.test/chat/badges?broadcaster_id=100'));
+
+		eventSub.notify(eventSub.connections[0], 'channel.chat.message', { ...chatEvent, badges: [{ set_id: 'moderator', id: '1' }] });
+		await waitFor(() => sink.events.length >= 1, 'the message');
+		const [event] = sink.events;
+		assert.ok(event.type === 'message');
+		assert.deepStrictEqual(event.message.author.badges, [{ title: 'Moderator', url: 'https://static-cdn.jtvnw.net/badges/v1/mod/2', role: 'moderator' }]);
+	});
+
 	test('stops instead of looping when Twitch refuses the subscriptions', async () => {
 		const sink = new RecordingSink();
 		const auth = new FakeAuth((url) => (url.includes('/users') ? helix(url) : json({ message: 'Missing scope: user:read:chat' }, 403)));

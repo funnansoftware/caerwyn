@@ -1,4 +1,5 @@
-import { ChatAuthor, ChatMessage, Fragment, Role, Spent } from '../types';
+import { Badge, ChatAuthor, ChatMessage, Fragment, Role, Spent } from '../types';
+import type { BadgeLookup } from './twitchBadges';
 
 // Pure mapping from EventSub chat event payloads to the platform-neutral model.
 // Field names follow https://dev.twitch.tv/docs/eventsub/reference/chat
@@ -11,6 +12,9 @@ interface TwitchFragment {
 
 interface TwitchBadge {
 	set_id?: string;
+	/** Which version of the set, such as the tier for a subscriber badge or the level of an event badge. */
+	id?: string;
+	info?: string;
 }
 
 interface TwitchMessageBody {
@@ -38,15 +42,16 @@ export interface TwitchChatEvent {
 	notice_type?: string;
 }
 
-const BADGE_ROLES: Record<string, Role> = {
-	broadcaster: 'broadcaster',
-	moderator: 'moderator',
-	lead_moderator: 'moderator',
-	vip: 'vip',
-	subscriber: 'subscriber',
-	founder: 'subscriber',
-	partner: 'verified',
-};
+// A Map, so a badge set such as `constructor` cannot reach `Object.prototype`.
+const BADGE_ROLES = new Map<string, Role>([
+	['broadcaster', 'broadcaster'],
+	['moderator', 'moderator'],
+	['lead_moderator', 'moderator'],
+	['vip', 'vip'],
+	['subscriber', 'subscriber'],
+	['founder', 'subscriber'],
+	['partner', 'verified'],
+]);
 
 /** What a viewer paid for something, from a channel points redemption or a Bits event. */
 export interface Cost {
@@ -118,25 +123,35 @@ export function stripAction(fragments: Fragment[]): boolean {
 	return true;
 }
 
-export function mapAuthor(event: TwitchChatEvent): ChatAuthor {
+/** `badges` finds each badge's picture; without it, or for a badge it does not know, only the role shows. */
+export function mapAuthor(event: TwitchChatEvent, badges?: BadgeLookup): ChatAuthor {
 	const roles = new Set<Role>();
+	const images: Badge[] = [];
 	for (const badge of event.badges ?? []) {
-		const role = badge.set_id ? BADGE_ROLES[badge.set_id] : undefined;
+		const role = badge.set_id ? BADGE_ROLES.get(badge.set_id) : undefined;
 		if (role) {
 			roles.add(role);
 		}
+		const image = badge.set_id && badge.id ? badges?.find(event.broadcaster_user_id, badge.set_id, badge.id) : undefined;
+		if (image) {
+			images.push(role ? { ...image, role } : { ...image });
+		}
 	}
 	const anonymous = event.chatter_is_anonymous === true;
-	return {
+	const author: ChatAuthor = {
 		id: anonymous ? '' : (event.chatter_user_id ?? ''),
 		login: anonymous ? undefined : event.chatter_user_login,
 		name: anonymous ? 'Anonymous' : event.chatter_user_name || event.chatter_user_login || 'Unknown',
 		color: event.color && COLOR.test(event.color) ? event.color : undefined,
 		roles: [...roles],
 	};
+	if (images.length > 0) {
+		author.badges = images;
+	}
+	return author;
 }
 
-function base(event: TwitchChatEvent, sourceId: string, timestamp: number): ChatMessage {
+function base(event: TwitchChatEvent, sourceId: string, timestamp: number, badges: BadgeLookup | undefined): ChatMessage {
 	const fragments = mapFragments(event.message);
 	const action = stripAction(fragments);
 	return {
@@ -146,16 +161,19 @@ function base(event: TwitchChatEvent, sourceId: string, timestamp: number): Chat
 		sourceId,
 		channelId: event.broadcaster_user_id,
 		channelName: event.broadcaster_user_name || event.broadcaster_user_login || event.broadcaster_user_id,
-		author: mapAuthor(event),
+		author: mapAuthor(event, badges),
 		fragments,
 		timestamp,
 		...(action ? { action } : {}),
 	};
 }
 
-/** Maps a `channel.chat.message` event. `cost` is what the viewer paid, when a matching redemption or Bits event says. */
-export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timestamp: number, cost?: Cost): ChatMessage {
-	const message = base(event, sourceId, timestamp);
+/**
+ * Maps a `channel.chat.message` event. `cost` is what the viewer paid, when a matching redemption or Bits event says;
+ * `badges` finds the pictures for the chatter's badges.
+ */
+export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timestamp: number, cost?: Cost, badges?: BadgeLookup): ChatMessage {
+	const message = base(event, sourceId, timestamp, badges);
 	const headlines: string[] = [];
 	const spent: Spent[] = [];
 	const bits = event.cheer?.bits;
@@ -187,8 +205,8 @@ export function mapChatMessage(event: TwitchChatEvent, sourceId: string, timesta
 }
 
 /** Maps a `channel.chat.notification` event (subscriptions, raids, announcements and so on). */
-export function mapNotification(event: TwitchChatEvent, sourceId: string, timestamp: number): ChatMessage {
-	const message = base(event, sourceId, timestamp);
+export function mapNotification(event: TwitchChatEvent, sourceId: string, timestamp: number, badges?: BadgeLookup): ChatMessage {
+	const message = base(event, sourceId, timestamp, badges);
 	// Some notices, such as announcements, have no system message; name the notice type instead.
 	const fallback = (event.notice_type ?? 'notice').replace(/_/g, ' ');
 	message.headline = event.system_message || fallback.charAt(0).toUpperCase() + fallback.slice(1);

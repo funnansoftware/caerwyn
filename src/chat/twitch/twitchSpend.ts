@@ -1,4 +1,5 @@
 import { ChatMessage, Fragment } from '../types';
+import type { BadgeLookup } from './twitchBadges';
 import { Cost, EMOTE_ID, PaidMessageType, TwitchChatEvent, emoteUrl, mapChatMessage, isPaidMessageType } from './twitchMapper';
 
 // Channel points and Bits spending, from two EventSub subscriptions only the broadcaster can make:
@@ -196,24 +197,27 @@ export class SpendMatcher {
 	private messages: WaitingMessage[] = [];
 	private costs: WaitingCost[] = [];
 
-	constructor(private readonly now: () => number = Date.now) {}
+	constructor(
+		private readonly now: () => number = Date.now,
+		private readonly badges?: BadgeLookup,
+	) {}
 
 	/** Maps a `channel.chat.message` event, with its cost if that is already known. */
 	message(event: TwitchChatEvent, sourceId: string, timestamp: number): ChatMessage {
 		if (!isPaidMessageType(event.message_type) || !event.chatter_user_id) {
-			return mapChatMessage(event, sourceId, timestamp);
+			return mapChatMessage(event, sourceId, timestamp, undefined, this.badges);
 		}
 		this.expire();
 		const index = bestMatch(this.costs, (waiting) => [waiting.cost, event]);
 		if (index >= 0) {
 			const [waiting] = this.costs.splice(index, 1);
-			return mapChatMessage(event, sourceId, timestamp, waiting.cost.spent);
+			return mapChatMessage(event, sourceId, timestamp, waiting.cost.spent, this.badges);
 		}
 		this.messages.push({ event, sourceId, timestamp, at: this.now() });
 		if (this.messages.length > WAITING_LIMIT) {
 			this.messages.shift();
 		}
-		return mapChatMessage(event, sourceId, timestamp);
+		return mapChatMessage(event, sourceId, timestamp, undefined, this.badges);
 	}
 
 	/** Records a cost. Returns the message it belongs to, mapped again with the cost, if that was already shown. */
@@ -222,7 +226,7 @@ export class SpendMatcher {
 		const index = bestMatch(this.messages, (waiting) => [cost, waiting.event]);
 		if (index >= 0) {
 			const [waiting] = this.messages.splice(index, 1);
-			return mapChatMessage(waiting.event, waiting.sourceId, waiting.timestamp, cost.spent);
+			return mapChatMessage(waiting.event, waiting.sourceId, waiting.timestamp, cost.spent, this.badges);
 		}
 		this.costs.push({ cost, at: this.now() });
 		if (this.costs.length > WAITING_LIMIT) {

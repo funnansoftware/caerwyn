@@ -111,7 +111,7 @@ export class ChatWebview implements vscode.Disposable {
 		const script = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.js'));
 		const style = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.css'));
 		const nonce = randomBytes(16).toString('base64');
-		// Chat text is untrusted: no inline scripts, and images only from Twitch's emote CDN and YouTube's emoji host.
+		// Chat text is untrusted: no inline scripts, and images only from Twitch's emote and badge CDN and YouTube's emoji host.
 		const csp = [
 			`default-src 'none'`,
 			`img-src https://static-cdn.jtvnw.net https://yt3.ggpht.com`,

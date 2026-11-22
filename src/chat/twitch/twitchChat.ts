@@ -5,6 +5,7 @@ import { TwitchChatEvent, mapNotification } from './twitchMapper';
 import { AutomaticRedemptionEvent, BitsUseEvent, SpendMatcher, SpendResult, mapAutomaticRedemption, mapBitsUse } from './twitchSpend';
 import { AutomodEvent, mapAutomodHold, mapAutomodUpdate } from './twitchAutomod';
 import { ModerationError } from '../moderation';
+import { TwitchBadges } from './twitchBadges';
 
 // Reads Twitch chat through EventSub over WebSocket, the transport Twitch recommends.
 // Protocol: https://dev.twitch.tv/docs/eventsub/handling-websocket-events/
@@ -93,12 +94,15 @@ export class TwitchChat {
 	private viewerFailure: string | undefined;
 	private viewerFailures = 0;
 	private readonly seen = new Set<string>();
-	private readonly spending = new SpendMatcher();
+	private readonly badges: TwitchBadges;
+	private readonly spending: SpendMatcher;
 
 	constructor(private readonly options: TwitchChatOptions) {
 		this.keepaliveMs = (options.keepaliveSeconds ?? 30) * 1000;
 		this.wsUrl = `${options.wsUrl ?? DEFAULT_WS_URL}?keepalive_timeout_seconds=${options.keepaliveSeconds ?? 30}`;
 		this.helixUrl = options.helixUrl ?? DEFAULT_HELIX_URL;
+		this.badges = new TwitchBadges(options.auth, this.helixUrl, (message) => options.sink.log(message));
+		this.spending = new SpendMatcher(undefined, this.badges);
 	}
 
 	start(): void {
@@ -141,6 +145,11 @@ export class TwitchChat {
 			return;
 		}
 		if (this.disposed || this.channels.size === 0) {
+			return;
+		}
+		// Before the socket opens, so the first messages have their pictures; it never throws.
+		await this.badges.load([...this.channels.keys()]);
+		if (this.disposed) {
 			return;
 		}
 		this.validateTimer = setInterval(() => void this.revalidate(), VALIDATE_INTERVAL_MS);
@@ -526,7 +535,7 @@ export class TwitchChat {
 				break;
 			}
 			case 'channel.chat.notification':
-				sink.event({ type: 'message', message: mapNotification(event, channel.source.id, timestamp) });
+				sink.event({ type: 'message', message: mapNotification(event, channel.source.id, timestamp, this.badges) });
 				break;
 			case 'channel.chat.message_delete':
 				sink.event({ type: 'delete', key: `twitch:${event.message_id}` });
@@ -583,6 +592,8 @@ export class TwitchChat {
 	private async revalidate(): Promise<void> {
 		try {
 			await this.options.auth.ensureValid();
+			// Picks up badges that failed to load at startup; ones already loaded are not fetched again.
+			await this.badges.load([...this.channels.keys()]);
 		} catch (err) {
 			if (err instanceof NotSignedInError && !this.disposed) {
 				this.stopped = true;

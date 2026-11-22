@@ -405,6 +405,14 @@ body.view {
 	vertical-align: 0.15em;
 }
 
+/* A fixed size, so a picture that loads late does not move the chat while it follows new messages. */
+.badge-image {
+	width: 18px;
+	height: 18px;
+	margin-right: 4px;
+	vertical-align: -0.3em;
+}
+
 .author,
 .card-name {
 	/* Platform name colours are picked for one background; blending with the theme's text colour keeps

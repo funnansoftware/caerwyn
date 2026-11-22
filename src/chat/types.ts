@@ -55,6 +55,15 @@ export interface HeldMessage {
 	fragments: Fragment[];
 }
 
+/** A badge picture shown before the author's name, such as a Twitch subscriber or event badge. */
+export interface Badge {
+	/** The platform's name for it, shown on hover. */
+	title: string;
+	url: string;
+	/** The role this badge stands for, if any, so the view does not also show that role as a label. */
+	role?: Role;
+}
+
 export interface ChatAuthor {
 	/** Platform user ID (Twitch user ID, YouTube channel ID). Needed later for moderation actions. */
 	id: string;
@@ -64,6 +73,8 @@ export interface ChatAuthor {
 	color?: string;
 	avatarUrl?: string;
 	roles: Role[];
+	/** Badge pictures, in the platform's order. Absent when the platform sent none the extension could show. */
+	badges?: Badge[];
 }
 
 /** What a viewer spent: Twitch channel points or Bits. `amount` is absent when the platform has not said how much. */
