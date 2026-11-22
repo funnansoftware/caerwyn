@@ -1,4 +1,5 @@
 import { Disposable, Emitter } from '../util/emitter';
+import { ModerationError, ModerationRequest } from './moderation';
 import { SIMULATED_SOURCES, SimulatedChat, SimulatedEventKind, simulatedClearEvents } from './simulation/simulatedChat';
 import { TwitchChat } from './twitch/twitchChat';
 import {
@@ -109,6 +110,7 @@ export class ChatService {
 			source,
 			label: this.labels.get(source.id) ?? defaultLabel(source),
 			status: this.statuses.get(source.id) ?? { state: 'idle' },
+			canModerate: source.kind === 'simulated',
 		}));
 	}
 
@@ -214,6 +216,41 @@ export class ChatService {
 		}
 		this.simulation.emit(kind);
 		return true;
+	}
+
+	/**
+	 * Carries out a moderation request from the view. The removal reaches the view as ordinary chat events once
+	 * the platform reports it, so every open view updates, not only the one that asked.
+	 * Throws `ModerationError` when the source cannot moderate.
+	 */
+	async moderate(request: ModerationRequest): Promise<void> {
+		try {
+			this.moderateSource(request);
+			this.options.log(`Moderation: ${request.action.type} in ${request.sourceId}`);
+		} catch (error) {
+			this.options.log(`Moderation refused: ${request.action.type} in ${request.sourceId}: ${error instanceof Error ? error.message : String(error)}`);
+			throw error;
+		}
+	}
+
+	private moderateSource(request: ModerationRequest): void {
+		const source = this.allSources.find((candidate) => candidate.id === request.sourceId);
+		if (!source) {
+			throw new ModerationError('That chat is no longer connected.');
+		}
+		const { action } = request;
+		if (action.type === 'delete' && this.buffer.some((message) => message.key === action.messageKey && message.sourceId !== source.id)) {
+			throw new ModerationError('That message is not in this chat.');
+		}
+		if (source.kind === 'simulated') {
+			if (!this.simulation) {
+				throw new ModerationError('Simulated chat is not running.');
+			}
+			this.simulation.moderate(source.platform, action);
+			return;
+		}
+		// Real moderation needs the platforms' moderation APIs and broader sign-in scopes; see `TWITCH_SCOPES`.
+		throw new ModerationError(`Moderating ${source.platform === 'twitch' ? 'Twitch' : 'YouTube'} chat is not available yet.`);
 	}
 
 	clearMessages(): void {

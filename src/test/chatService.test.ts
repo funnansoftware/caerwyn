@@ -135,6 +135,48 @@ suite('ChatService', () => {
 		assert.strictEqual(service.simulate('twitchMessage'), false);
 	});
 
+	test('moderation acts on simulated chat and is refused, without side effects, elsewhere', async () => {
+		maxMessages = 500;
+		await service.addSource(TWITCH_SELF);
+		simulation.enabled = true;
+		service.refreshConfig();
+		service.start();
+		assert.deepStrictEqual(
+			service.sources.map((info) => [info.source.id, info.canModerate]),
+			[
+				['twitch:me', false],
+				['twitch:simulated', true],
+				['youtube:simulated', true],
+			],
+		);
+
+		service.simulate('twitchMessage');
+		const target = service.messages[service.messages.length - 1];
+		const seen: ChatEvent[] = [];
+		const listening = service.onEvents((events) => seen.push(...events));
+		await service.moderate({ sourceId: target.sourceId, action: { type: 'delete', messageKey: target.key } });
+		await waitFor(() => seen.some((e) => e.type === 'delete' && e.key === target.key), 'the removal to reach listeners');
+		listening.dispose();
+		assert.ok(!service.messages.some((m) => m.key === target.key), 'the message left the history');
+
+		await assert.rejects(
+			service.moderate({ sourceId: 'twitch:me', action: { type: 'ban', userId: 'u1' } }),
+			(error: Error) => error.name === 'ModerationError' && /not available yet/.test(error.message),
+		);
+		await assert.rejects(
+			service.moderate({ sourceId: 'twitch:gone', action: { type: 'ban', userId: 'u1' } }),
+			/no longer connected/,
+		);
+
+		// A real message cannot be removed by naming the simulated source instead of its own.
+		emit({ type: 'message', message: message('real') });
+		await assert.rejects(
+			service.moderate({ sourceId: 'twitch:simulated', action: { type: 'delete', messageKey: 'twitch:real' } }),
+			/not in this chat/,
+		);
+		assert.ok(ids().includes('real'));
+	});
+
 	test('simulated chat arrives on its own at the configured rate and stops with the service', async () => {
 		maxMessages = 500;
 		simulation = { enabled: true, messagesPerSecond: 50 };

@@ -93,6 +93,8 @@ export interface SourceInfo {
 	source: ChatSource;
 	label: string;
 	status: SourceStatus;
+	/** Whether the view can delete messages and time out or ban users in this source. */
+	canModerate: boolean;
 }
 
 /** Where chat connections report what happens. */

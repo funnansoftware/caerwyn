@@ -186,11 +186,34 @@ body.view {
 	vertical-align: 0.15em;
 }
 
-.author {
+.author,
+.card-name {
 	/* Platform name colours are picked for one background; blending with the theme's text colour keeps
 	   dark blues readable on dark themes and pale yellows readable on light ones. */
 	color: color-mix(in srgb, var(--name) 65%, var(--vscode-foreground));
 	font-weight: 600;
+}
+
+/* The name is a button that opens the user card, but reads as plain text. */
+.author {
+	padding: 0;
+	border: 0;
+	background: none;
+	line-height: inherit;
+	overflow-wrap: anywhere;
+	text-align: start;
+}
+
+.author:hover {
+	background: none;
+}
+
+.author:hover:not(:disabled) {
+	text-decoration: underline;
+}
+
+.author:disabled {
+	cursor: default;
 }
 
 .action-message .body {
@@ -229,7 +252,9 @@ body.view {
 
 .empty[hidden],
 .sources[hidden],
-.jump[hidden] {
+.jump[hidden],
+.card[hidden],
+.card-status[hidden] {
 	display: none;
 }
 
@@ -281,4 +306,245 @@ button:focus-visible {
 	border-radius: 12px;
 	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgb(0 0 0 / 35%));
 	transform: translateX(-50%);
+}
+
+/* User card */
+
+.card {
+	position: absolute;
+	right: 8px;
+	bottom: 8px;
+	left: 8px;
+	z-index: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	max-height: min(70%, 420px);
+	padding: 10px 12px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, transparent));
+	border-top: 3px solid var(--platform);
+	border-radius: 4px;
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgb(0 0 0 / 35%));
+}
+
+.card-header {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	align-items: start;
+	gap: 2px 8px;
+}
+
+.card-who {
+	overflow-wrap: anywhere;
+	font-size: 1.1em;
+}
+
+.card-login,
+.card-where,
+.card-section,
+.card-label,
+.card-note,
+.history-time {
+	color: var(--vscode-descriptionForeground);
+}
+
+.card-login {
+	margin-left: 6px;
+	font-size: 0.85em;
+}
+
+.card-where {
+	grid-column: 1 / -1;
+	font-size: 0.9em;
+}
+
+.card-close {
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border-color: transparent;
+	background: none;
+	color: inherit;
+	font-size: 1.2em;
+	line-height: 1;
+}
+
+.card-close:hover {
+	background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+
+.card-actions {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 6px;
+}
+
+.card-group {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+
+.card-label {
+	margin-right: 2px;
+	font-size: 0.9em;
+}
+
+.card-button {
+	padding: 2px 8px;
+}
+
+.card-button.secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.card-button.secondary:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.card-button.danger {
+	margin-left: 6px;
+	border-color: var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+	background: transparent;
+	color: var(--vscode-errorForeground);
+}
+
+.card-button.danger:hover:not(:disabled),
+.card-button.danger.confirm {
+	background: var(--vscode-inputValidation-errorBackground, color-mix(in srgb, var(--vscode-errorForeground) 20%, transparent));
+	color: var(--vscode-foreground);
+}
+
+.card-button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.card-note {
+	margin: 0;
+	font-size: 0.9em;
+}
+
+.card-status {
+	font-size: 0.9em;
+}
+
+.card-status.error {
+	color: var(--vscode-errorForeground);
+}
+
+.card-section {
+	padding-top: 6px;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	font-size: 0.85em;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+
+.history {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+
+.history-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	padding: 2px 4px;
+	border-left: 2px solid transparent;
+	border-radius: 2px;
+}
+
+.history-item:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+/* The message whose name was clicked. */
+.history-item.current {
+	border-left-color: var(--platform);
+	background: color-mix(in srgb, var(--platform) 14%, transparent);
+}
+
+.history-text {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Each message's Delete shows on hover or keyboard focus, and always on the clicked message. */
+.history-delete {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border-color: transparent;
+	border-radius: 3px;
+	background: none;
+	color: var(--vscode-descriptionForeground);
+	/* Faded rather than hidden, so it can still be reached with Tab. */
+	opacity: 0;
+}
+
+.history-delete:hover {
+	background: none;
+}
+
+.history-delete:hover:not(:disabled) {
+	background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-errorForeground);
+}
+
+.icon {
+	width: 14px;
+	height: 14px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.history-item:hover .history-delete,
+.history-item:focus-within .history-delete,
+.history-item.current .history-delete {
+	opacity: 1;
+}
+
+.history-item .history-delete:disabled {
+	opacity: 0;
+}
+
+.history-item.current .history-delete:disabled,
+.history-item:hover .history-delete:disabled {
+	opacity: 0.5;
+}
+
+.history-time {
+	margin-right: 6px;
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+}
+
+.history-headline {
+	font-weight: 600;
+}
+
+.history-item.deleted .body {
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+
+.vscode-high-contrast .card {
+	border-color: var(--vscode-contrastBorder, currentColor);
 }

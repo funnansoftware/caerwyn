@@ -1,3 +1,4 @@
+import type { ModerationRequest } from '../chat/moderation';
 import type { ChatEvent, ChatMessage, SourceInfo } from '../chat/types';
 
 // Messages exchanged between the extension host and the chat webview. The webview imports only types from here.
@@ -12,7 +13,9 @@ export type HostMessage =
 	| { type: 'events'; events: ChatEvent[] }
 	| { type: 'sources'; sources: SourceInfo[] }
 	| { type: 'settings'; settings: ViewSettings }
-	| { type: 'reset' };
+	| { type: 'reset' }
+	/** The outcome of a `moderate` request: no `error` means it was carried out. */
+	| { type: 'moderationResult'; requestId: number; error?: string };
 
 export const VIEW_ACTIONS = [
 	'signInTwitch',
@@ -24,4 +27,7 @@ export const VIEW_ACTIONS = [
 ] as const;
 export type ViewAction = (typeof VIEW_ACTIONS)[number];
 
-export type WebviewMessage = { type: 'ready' } | { type: 'action'; action: ViewAction };
+export type WebviewMessage =
+	| { type: 'ready' }
+	| { type: 'action'; action: ViewAction }
+	| { type: 'moderate'; requestId: number; request: ModerationRequest };

@@ -1,3 +1,4 @@
+import { ModerationAction, ModerationError } from '../moderation';
 import { TwitchChatEvent, mapChatMessage, mapNotification } from '../twitch/twitchMapper';
 import { ChatEvent, ChatSink, Platform, SimulatedSource } from '../types';
 import { YouTubeChatItem, mapYouTubeItem } from '../youtube/youtubeMapper';
@@ -153,6 +154,8 @@ export class SimulatedChat {
 	private disposed = false;
 	/** Set while the showcase plays. */
 	private staged = false;
+	/** Users the view timed out or banned, by `<platform>:<user id>`, until when. They stop chatting until then. */
+	private readonly blocked = new Map<string, number>();
 
 	constructor(private readonly options: SimulatedChatOptions) {
 		this.random = seededRandom(options.seed ?? Date.now());
@@ -177,6 +180,40 @@ export class SimulatedChat {
 	forget(): void {
 		this.recent.twitch = [];
 		this.recent.youtube = [];
+	}
+
+	/**
+	 * Carries out a moderation request from the view the way the platform would: the platform reports the removal
+	 * as a chat event, and a timed-out or banned user stops chatting.
+	 */
+	moderate(platform: Platform, action: ModerationAction): void {
+		if (action.type === 'delete') {
+			const prefix = `${platform}:`;
+			if (!action.messageKey.startsWith(prefix)) {
+				throw new ModerationError('That message is not in this chat.');
+			}
+			const id = action.messageKey.slice(prefix.length);
+			// A later simulated removal must not pick this message again.
+			this.recent[platform] = this.recent[platform].filter((entry) => entry.id !== id);
+			if (platform === 'twitch') {
+				this.send({ type: 'delete', key: action.messageKey });
+			} else {
+				this.youtubeItem(YOUTUBE_OWNER, { type: 'messageDeletedEvent', messageDeletedDetails: { deletedMessageId: id } });
+			}
+			return;
+		}
+		const { userId } = action;
+		if (userId === (platform === 'twitch' ? TWITCH_BROADCASTER.id : YOUTUBE_OWNER.channelId)) {
+			throw new ModerationError(`You cannot ${action.type === 'ban' ? 'ban' : 'time out'} the broadcaster.`);
+		}
+		const until = action.type === 'ban' ? Infinity : this.now() + action.durationSeconds * 1000;
+		this.blocked.set(`${platform}:${userId}`, until);
+		this.recent[platform] = this.recent[platform].filter((entry) => entry.userId !== userId);
+		if (platform === 'twitch') {
+			this.send({ type: 'purge', platform: 'twitch', channelId: TWITCH_CHANNEL_ID, userId });
+		} else {
+			this.youtubeItem(YOUTUBE_OWNER, { type: 'userBannedEvent', userBannedDetails: { bannedUserDetails: { channelId: userId } } });
+		}
 	}
 
 	/** Produces one requested event immediately. */
@@ -206,54 +243,54 @@ export class SimulatedChat {
 				this.send({ type: 'clear', platform: 'twitch', channelId: TWITCH_CHANNEL_ID });
 				break;
 			case 'twitchMessage':
-				this.twitchChat(this.pick(TWITCH_CHATTERS), this.line());
+				this.twitchChat(this.twitchChatter(), this.line());
 				break;
 			case 'twitchEmotes': {
 				const emotes = Object.keys(TWITCH_EMOTES);
 				const words = Array.from({ length: this.int(4, 10) }, () => this.pick(emotes));
-				this.twitchChat(this.pick(TWITCH_CHATTERS), words.join(' '));
+				this.twitchChat(this.twitchChatter(), words.join(' '));
 				break;
 			}
 			case 'twitchReply': {
 				const parent = this.recentOrNew('twitch');
-				this.twitchChat(this.pick(TWITCH_CHATTERS), `@${parent.name} ${this.line()}`, {
+				this.twitchChat(this.twitchChatter(), `@${parent.name} ${this.line()}`, {
 					reply: { parent_user_name: parent.name, parent_message_body: parent.text },
 				});
 				break;
 			}
 			case 'twitchAction':
-				this.twitchChat(this.pick(TWITCH_CHATTERS), `\u0001ACTION ${this.pick(['waves at chat', 'grabs a coffee', 'takes notes'])}\u0001`);
+				this.twitchChat(this.twitchChatter(), `\u0001ACTION ${this.pick(['waves at chat', 'grabs a coffee', 'takes notes'])}\u0001`);
 				break;
 			case 'twitchBroadcaster':
-				this.twitchChat(TWITCH_BROADCASTER, `@${this.pick(TWITCH_CHATTERS).name} good question, I will get to it in a minute`);
+				this.twitchChat(TWITCH_BROADCASTER, `@${this.twitchChatter().name} good question, I will get to it in a minute`);
 				break;
 			case 'longMessage':
-				this.twitchChat(this.pick(TWITCH_CHATTERS), this.pick(LONG_LINES));
+				this.twitchChat(this.twitchChatter(), this.pick(LONG_LINES));
 				break;
 			case 'twitchCheer': {
 				const bits = this.pick([1, 100, 500, 1000]);
-				this.twitchChat(this.pick(TWITCH_CHATTERS), `Cheer${bits} ${this.line()}`, { cheer: { bits } });
+				this.twitchChat(this.twitchChatter(), `Cheer${bits} ${this.line()}`, { cheer: { bits } });
 				break;
 			}
 			case 'twitchSub': {
-				const chatter = this.pick(TWITCH_CHATTERS);
+				const chatter = this.twitchChatter();
 				this.twitchNotice(chatter, 'sub', `${chatter.name} subscribed at Tier 1.`);
 				break;
 			}
 			case 'twitchResub': {
-				const chatter = this.pick(TWITCH_CHATTERS);
+				const chatter = this.twitchChatter();
 				const months = this.int(2, 48);
 				this.twitchNotice(chatter, 'resub', `${chatter.name} subscribed at Tier 1. They've subscribed for ${months} months!`, this.line());
 				break;
 			}
 			case 'twitchGiftSub': {
-				const chatter = this.pick(TWITCH_CHATTERS);
-				this.twitchNotice(chatter, 'sub_gift', `${chatter.name} gifted a Tier 1 sub to ${this.pick(TWITCH_CHATTERS).name}!`);
+				const chatter = this.twitchChatter();
+				this.twitchNotice(chatter, 'sub_gift', `${chatter.name} gifted a Tier 1 sub to ${this.twitchChatter().name}!`);
 				break;
 			}
 			case 'twitchCommunityGift':
 				this.twitchNotice(
-					this.pick(TWITCH_CHATTERS),
+					this.twitchChatter(),
 					'community_sub_gift',
 					`An anonymous user is gifting ${this.pick([5, 10, 20])} Tier 1 Subs to ${TWITCH_BROADCASTER.name}'s community!`,
 					undefined,
@@ -261,7 +298,7 @@ export class SimulatedChat {
 				);
 				break;
 			case 'twitchRaid': {
-				const chatter = this.pick(TWITCH_CHATTERS);
+				const chatter = this.twitchChatter();
 				this.twitchNotice(chatter, 'raid', `${this.int(3, 250)} raiders from ${chatter.name} have joined!`);
 				break;
 			}
@@ -279,34 +316,34 @@ export class SimulatedChat {
 				break;
 			}
 			case 'youtubeMessage':
-				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), { type: 'textMessageEvent', displayMessage: this.line(false) });
+				this.youtubeItem(this.youtubeChatter(), { type: 'textMessageEvent', displayMessage: this.line(false) });
 				break;
 			case 'youtubeOwner':
 				this.youtubeItem(YOUTUBE_OWNER, { type: 'textMessageEvent', displayMessage: 'Welcome in, everyone. Links are in the description.' });
 				break;
 			case 'youtubeSuperChat':
-				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), {
+				this.youtubeItem(this.youtubeChatter(), {
 					type: 'superChatEvent',
 					superChatDetails: { amountDisplayString: this.pick(SUPER_CHAT_AMOUNTS), userComment: this.line(false) },
 				});
 				break;
 			case 'youtubeSuperSticker':
-				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), {
+				this.youtubeItem(this.youtubeChatter(), {
 					type: 'superStickerEvent',
 					superStickerDetails: { amountDisplayString: this.pick(SUPER_CHAT_AMOUNTS), superStickerMetadata: { altText: 'A cat waving hello' } },
 				});
 				break;
 			case 'youtubeNewMember':
-				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), { type: 'newSponsorEvent', displayMessage: 'Welcome to Early Birds!' });
+				this.youtubeItem(this.youtubeChatter(), { type: 'newSponsorEvent', displayMessage: 'Welcome to Early Birds!' });
 				break;
 			case 'youtubeMilestone':
-				this.youtubeItem(this.pick(YOUTUBE_CHATTERS), {
+				this.youtubeItem(this.youtubeChatter(), {
 					type: 'memberMilestoneChatEvent',
 					memberMilestoneChatDetails: { memberMonth: this.int(2, 36), memberLevelName: 'Early Birds', userComment: this.line(false) },
 				});
 				break;
 			case 'youtubeGift': {
-				const chatter = this.pick(YOUTUBE_CHATTERS);
+				const chatter = this.youtubeChatter();
 				this.youtubeItem(chatter, {
 					type: 'membershipGiftingEvent',
 					displayMessage: `${chatter.name} gifted ${this.pick([1, 5, 10])} ${YOUTUBE_OWNER.name} memberships`,
@@ -378,6 +415,30 @@ export class SimulatedChat {
 
 	private nextId(): string {
 		return `sim-${this.session}-${++idCounter}`;
+	}
+
+	/** A random Twitch chatter who is allowed to chat. */
+	private twitchChatter(): TwitchChatter {
+		return this.pick(this.allowed('twitch', TWITCH_CHATTERS, (chatter) => chatter.id));
+	}
+
+	/** A random YouTube chatter who is allowed to chat. */
+	private youtubeChatter(): YouTubeChatter {
+		return this.pick(this.allowed('youtube', YOUTUBE_CHATTERS, (chatter) => chatter.channelId));
+	}
+
+	/** The chatters not timed out or banned. If that is nobody, everyone, so the chat keeps going. */
+	private allowed<T>(platform: Platform, chatters: readonly T[], id: (chatter: T) => string): readonly T[] {
+		const now = this.now();
+		const free = chatters.filter((chatter) => {
+			const key = `${platform}:${id(chatter)}`;
+			const until = this.blocked.get(key);
+			if (until !== undefined && until <= now) {
+				this.blocked.delete(key);
+			}
+			return until === undefined || until <= now;
+		});
+		return free.length > 0 ? free : chatters;
 	}
 
 	private pick<T>(items: readonly T[]): T {
