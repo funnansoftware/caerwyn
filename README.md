@@ -28,7 +28,7 @@ Caerwyn signs in to each platform with OAuth. Each platform requires you to regi
 Two things to know about Google's side:
 
 - While the consent screen's publishing status is **Testing**, Google expires the sign-in after 7 days and you will need to sign in again.
-- YouTube API usage counts against your project's daily quota, 10,000 units by default. Each chat connection costs 5 units. While you have no live or upcoming broadcast, Caerwyn checks for one every minute at 2 units per check.
+- YouTube API usage counts against your project's daily quota, 10,000 units by default. Each chat connection costs 5 units. While you have no live or upcoming broadcast, Caerwyn checks for one every minute at 2 units per check. While a chat is open, Caerwyn checks the broadcast every minute for its viewer count and title, at 1 unit. Until that broadcast is live, the check also looks for a different broadcast that has gone live, at 1 more unit, and switches to its chat.
 
 ## Using it
 

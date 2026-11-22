@@ -71,7 +71,27 @@ interface ChatResponse extends ApiErrorBody {
 }
 
 /** `videoId` is the broadcast's video, where its viewer count is read; without it there is no count. */
-type Lookup = { liveChatId: string; title: string; videoId?: string } | { wait: string } | { ended: string };
+type Found = { liveChatId: string; title: string; videoId?: string };
+type Lookup = Found | { wait: string } | { ended: string };
+
+interface VideoSnippet {
+	channelTitle?: string;
+	title?: string;
+	/** `live`, `upcoming` or `none`. */
+	liveBroadcastContent?: string;
+}
+
+interface VideoResponse {
+	items?: {
+		snippet?: VideoSnippet;
+		liveStreamingDetails?: { activeLiveChatId?: string; concurrentViewers?: unknown };
+	}[];
+}
+
+/** The abort reason used to drop the chat being read and look up the broadcast again. */
+class Reconnect {
+	constructor(readonly why: string) {}
+}
 
 export class YouTubeChat {
 	private readonly abort = new AbortController();
@@ -81,6 +101,8 @@ export class YouTubeChat {
 	private readonly viewerIntervalMs: number;
 	private pageToken: string | undefined;
 	private pollMs = 5000;
+	/** The last status reported, so the label can change without changing the status. */
+	private current: SourceStatus = { state: 'connecting' };
 
 	constructor(private readonly options: YouTubeChatOptions) {
 		this.apiUrl = options.apiUrl ?? DEFAULT_API_URL;
@@ -104,8 +126,14 @@ export class YouTubeChat {
 	/** A disposed connection stays quiet, so it cannot overwrite the status of its replacement. */
 	private status(status: SourceStatus, label?: string): void {
 		if (!this.signal.aborted) {
+			this.current = status;
 			this.options.sink.status(this.options.source.id, status, label);
 		}
+	}
+
+	/** The name shown for the chat: the channel for someone else's video, the broadcast title for your own. */
+	private labelFor(snippet: VideoSnippet | undefined): string | undefined {
+		return (this.options.source.kind === 'video' ? snippet?.channelTitle || snippet?.title : snippet?.title) || undefined;
 	}
 
 	private async run(): Promise<void> {
@@ -116,15 +144,28 @@ export class YouTubeChat {
 				const found = await this.findChat();
 				if ('liveChatId' in found) {
 					attempt = 0;
+					const context: YouTubeMapContext = { sourceId: this.options.source.id, liveChatId: found.liveChatId, channelName: found.title };
 					const watching = new AbortController();
+					const signal = AbortSignal.any([this.signal, watching.signal]);
 					if (found.videoId) {
-						void this.pollViewers(found.videoId, AbortSignal.any([this.signal, watching.signal]));
+						void this.watchBroadcast(found.videoId, context, signal, (why) => watching.abort(new Reconnect(why)));
 					}
 					try {
-						await this.readChat(found.liveChatId, found.title);
+						await this.readChat(context, signal);
+					} catch (err) {
+						if (this.signal.aborted || !(watching.signal.reason instanceof Reconnect)) {
+							throw err;
+						}
 					} finally {
 						watching.abort();
 						this.viewers(undefined);
+					}
+					const reconnect: unknown = watching.signal.reason;
+					if (reconnect instanceof Reconnect) {
+						// Look again straight away: the live broadcast is found before any upcoming one.
+						this.options.sink.log(`YouTube: ${reconnect.why}; reconnecting to its chat.`);
+						this.status({ state: 'connecting' });
+						continue;
 					}
 					this.status({ state: 'ended', detail: 'The live chat has ended.' });
 					if (this.options.source.kind === 'video') {
@@ -172,23 +213,62 @@ export class YouTubeChat {
 	}
 
 	/**
-	 * Fetches the stream's viewer count now and then on a timer, until `signal` aborts.
-	 * Viewer counts are extra: a failure here is logged and never interrupts the chat.
+	 * Checks on the broadcast whose chat is being read, now and then on a timer, until `signal` aborts.
+	 * It reports the viewer count and picks up a renamed title. It calls `onReconnect` when the chat
+	 * should be read afresh:
+	 * - when the broadcast goes live, because a chat connection opened before then has been seen to
+	 *   receive nothing afterwards, where a new connection does;
+	 * - on your own channel, when a different broadcast is live, for example when you went live on a
+	 *   new one while the chat of an older scheduled one was being read.
+	 * This is extra to the chat: a failure here is logged and never interrupts it.
 	 */
-	private async pollViewers(videoId: string, signal: AbortSignal): Promise<void> {
-		const url = `${this.apiUrl}/videos?part=liveStreamingDetails&id=${encodeURIComponent(videoId)}`;
+	private async watchBroadcast(
+		videoId: string,
+		context: YouTubeMapContext,
+		signal: AbortSignal,
+		onReconnect: (why: string) => void,
+	): Promise<void> {
+		// The parts do not change the price: each lookup costs 1 quota unit.
+		const url = `${this.apiUrl}/videos?part=snippet&part=liveStreamingDetails&id=${encodeURIComponent(videoId)}`;
 		let lastFailure: string | undefined;
 		let failures = 0;
+		let seenBeforeLive = false;
 		while (!signal.aborted) {
 			try {
-				const data = await this.getJson<{ items?: { liveStreamingDetails?: { concurrentViewers?: unknown } }[] }>(url, signal);
+				const data = await this.getJson<VideoResponse>(url, signal);
 				if (signal.aborted) {
 					return;
 				}
+				const video = data?.items?.[0];
 				// A string of digits; absent when the stream is not live or its owner hides the count.
-				const raw = data?.items?.[0]?.liveStreamingDetails?.concurrentViewers;
+				const raw = video?.liveStreamingDetails?.concurrentViewers;
 				const count = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : undefined;
 				this.viewers(count);
+
+				const title = this.labelFor(video?.snippet);
+				if (title && title !== context.channelName) {
+					context.channelName = title;
+					this.status(this.current, title);
+				}
+
+				const content = video?.snippet?.liveBroadcastContent;
+				if (content === 'upcoming') {
+					seenBeforeLive = true;
+				} else if (content === 'live' && seenBeforeLive) {
+					// A new connection costs 5 units, once per broadcast.
+					onReconnect('the broadcast went live');
+					return;
+				}
+
+				const live = content === 'live' && video?.liveStreamingDetails?.activeLiveChatId === context.liveChatId;
+				if (this.options.source.kind !== 'video' && !live) {
+					// Costs 1 more unit, and only while the chat being read is not the live one.
+					const active = await this.findBroadcast('active', signal);
+					if (!signal.aborted && active && active.liveChatId !== context.liveChatId) {
+						onReconnect('a different broadcast went live');
+						return;
+					}
+				}
 				lastFailure = undefined;
 				failures = 0;
 			} catch (err) {
@@ -211,17 +291,14 @@ export class YouTubeChat {
 	private async findChat(): Promise<Lookup> {
 		const source = this.options.source;
 		if (source.kind === 'video') {
-			const data = await this.getJson<{
-				items?: {
-					snippet?: { channelTitle?: string; title?: string; liveBroadcastContent?: string };
-					liveStreamingDetails?: { activeLiveChatId?: string };
-				}[];
-			}>(`${this.apiUrl}/videos?part=snippet&part=liveStreamingDetails&id=${encodeURIComponent(source.videoId)}`);
+			const data = await this.getJson<VideoResponse>(
+				`${this.apiUrl}/videos?part=snippet&part=liveStreamingDetails&id=${encodeURIComponent(source.videoId)}`,
+			);
 			const video = data.items?.[0];
 			if (!video) {
 				return { ended: 'YouTube has no video with this ID.' };
 			}
-			const title = video.snippet?.channelTitle || video.snippet?.title || source.videoId;
+			const title = this.labelFor(video.snippet) ?? source.videoId;
 			const liveChatId = video.liveStreamingDetails?.activeLiveChatId;
 			if (liveChatId) {
 				return { liveChatId, title, videoId: source.videoId };
@@ -230,37 +307,47 @@ export class YouTubeChat {
 				? { wait: 'This stream has no live chat yet. Checking again every minute.' }
 				: { ended: 'This video has no active live chat.' };
 		}
-		// `broadcastType` defaults to `event`, which leaves out "stream now" broadcasts.
-		for (const status of ['active', 'upcoming']) {
-			const data = await this.getJson<{
-				// A broadcast's `id` is the ID of the video it plays as.
-				items?: { id?: string; snippet?: { liveChatId?: string; title?: string; scheduledStartTime?: string } }[];
-			}>(`${this.apiUrl}/liveBroadcasts?part=snippet&part=status&broadcastStatus=${status}&broadcastType=all&maxResults=50`);
-			const broadcasts = (data.items ?? [])
-				.filter((item) => item.snippet?.liveChatId)
-				.sort((a, b) => (a.snippet?.scheduledStartTime ?? '').localeCompare(b.snippet?.scheduledStartTime ?? ''));
-			const broadcast = broadcasts[0];
-			const snippet = broadcast?.snippet;
-			if (snippet?.liveChatId) {
-				return { liveChatId: snippet.liveChatId, title: snippet.title || 'YouTube', videoId: broadcast.id || undefined };
-			}
-		}
-		return { wait: 'No live or upcoming broadcast on your channel. Checking again every minute.' };
+		return (
+			(await this.findBroadcast('active')) ??
+			(await this.findBroadcast('upcoming')) ?? { wait: 'No live or upcoming broadcast on your channel. Checking again every minute.' }
+		);
 	}
 
-	/** Reads until the chat ends. Throws when the platform refuses for good. */
-	private async readChat(liveChatId: string, title: string): Promise<void> {
-		const context: YouTubeMapContext = { sourceId: this.options.source.id, liveChatId, channelName: title };
+	/**
+	 * Your own broadcast with the given status that has a chat. Costs 1 quota unit.
+	 * When there are several, the one scheduled closest to now wins: scheduled streams that never went
+	 * live stay `upcoming`, and the oldest of those is the least likely to be the one you mean.
+	 */
+	private async findBroadcast(status: 'active' | 'upcoming', signal = this.signal): Promise<Found | undefined> {
+		// `broadcastType` defaults to `event`, which leaves out "stream now" broadcasts.
+		const data = await this.getJson<{
+			// A broadcast's `id` is the ID of the video it plays as.
+			items?: { id?: string; snippet?: { liveChatId?: string; title?: string; scheduledStartTime?: string } }[];
+		}>(`${this.apiUrl}/liveBroadcasts?part=snippet&part=status&broadcastStatus=${status}&broadcastType=all&maxResults=50`, signal);
+		const now = Date.now();
+		const distance = (time: string | undefined) => {
+			const ms = Date.parse(time ?? '');
+			return Number.isNaN(ms) ? Infinity : Math.abs(ms - now);
+		};
+		const broadcast = (data.items ?? [])
+			.filter((item) => item.snippet?.liveChatId)
+			.sort((a, b) => distance(a.snippet?.scheduledStartTime) - distance(b.snippet?.scheduledStartTime))[0];
+		const snippet = broadcast?.snippet;
+		return snippet?.liveChatId ? { liveChatId: snippet.liveChatId, title: snippet.title || 'YouTube', videoId: broadcast.id || undefined } : undefined;
+	}
+
+	/** Reads until the chat ends or `signal` aborts. Throws when the platform refuses for good. */
+	private async readChat(context: YouTubeMapContext, signal: AbortSignal): Promise<void> {
 		this.pageToken = undefined;
 		let failures = 0;
 		for (;;) {
-			this.signal.throwIfAborted();
+			signal.throwIfAborted();
 			const startedAt = Date.now();
 			let ended: boolean;
 			try {
-				ended = this.options.transport === 'poll' ? await this.pollOnce(context) : await this.readStream(context);
+				ended = this.options.transport === 'poll' ? await this.pollOnce(context, signal) : await this.readStream(context, signal);
 			} catch (err) {
-				if (this.signal.aborted) {
+				if (signal.aborted) {
 					throw err;
 				}
 				if (err instanceof YouTubeApiError && err.reason === 'liveChatEnded') {
@@ -275,20 +362,20 @@ export class YouTubeChat {
 				}
 				this.options.sink.log(`YouTube chat interrupted: ${String(err)}`);
 				this.status({ state: 'connecting', detail: 'Reconnecting…' });
-				await sleep(backoffMs(failures++), this.signal);
+				await sleep(backoffMs(failures++), signal);
 				continue;
 			}
 			if (ended) {
 				return;
 			}
 			if (this.options.transport === 'poll') {
-				await sleep(Math.max(this.pollMs, 1000), this.signal);
+				await sleep(Math.max(this.pollMs, 1000), signal);
 				continue;
 			}
 			// The server closed the stream; resume from the last page token. Each connection costs quota,
 			// so back off when connections are not staying open.
 			failures = Date.now() - startedAt < SHORT_STREAM_MS ? failures + 1 : 0;
-			await sleep(failures > 0 ? backoffMs(failures) : 1000, this.signal);
+			await sleep(failures > 0 ? backoffMs(failures) : 1000, signal);
 		}
 	}
 
@@ -304,8 +391,8 @@ export class YouTubeChat {
 	}
 
 	/** Reads one streaming connection until it closes. Returns whether the chat ended. */
-	private async readStream(context: YouTubeMapContext): Promise<boolean> {
-		const res = await this.options.auth.fetch(`${this.streamUrl}?${this.chatQuery(context)}`, { signal: this.signal });
+	private async readStream(context: YouTubeMapContext, signal: AbortSignal): Promise<boolean> {
+		const res = await this.options.auth.fetch(`${this.streamUrl}?${this.chatQuery(context)}`, { signal });
 		if (!res.ok || !res.body) {
 			throw await failure(res);
 		}
@@ -327,8 +414,8 @@ export class YouTubeChat {
 		}
 	}
 
-	private async pollOnce(context: YouTubeMapContext): Promise<boolean> {
-		const response = await this.getJson<ChatResponse>(`${this.apiUrl}/liveChat/messages?${this.chatQuery(context)}`);
+	private async pollOnce(context: YouTubeMapContext, signal: AbortSignal): Promise<boolean> {
+		const response = await this.getJson<ChatResponse>(`${this.apiUrl}/liveChat/messages?${this.chatQuery(context)}`, signal);
 		this.status({ state: 'connected' }, context.channelName);
 		return this.handleResponse(response, context);
 	}

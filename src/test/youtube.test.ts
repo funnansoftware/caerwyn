@@ -180,7 +180,7 @@ suite('YouTubeChat', () => {
 			await waitFor(() => sink.viewerCount('youtube:me') === 1234, 'the first count');
 			const lookup = new URL(auth.requests.find((request) => request.url.includes('/videos'))?.url ?? '');
 			assert.strictEqual(lookup.searchParams.get('id'), 'vid1', 'the broadcast ID is its video ID');
-			assert.deepStrictEqual(lookup.searchParams.getAll('part'), ['liveStreamingDetails']);
+			assert.deepStrictEqual(lookup.searchParams.getAll('part'), ['snippet', 'liveStreamingDetails']);
 
 			viewers = '1300';
 			await waitFor(() => sink.viewerCount('youtube:me') === 1300, 'the next count');
@@ -190,6 +190,116 @@ suite('YouTubeChat', () => {
 			const polls = auth.requests.filter((request) => request.url.includes('/videos')).length;
 			await delay(100);
 			assert.strictEqual(auth.requests.filter((request) => request.url.includes('/videos')).length, polls, 'polling stops with the chat');
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('reads the upcoming broadcast closest to now, then switches when a different one goes live, and follows renames', async () => {
+		const sink = new RecordingSink();
+		const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+		let live = false;
+		let liveTitle = 'Live Now';
+		const auth = new FakeAuth((url) => {
+			const params = new URL(url).searchParams;
+			if (url.includes('/liveBroadcasts')) {
+				if (params.get('broadcastStatus') === 'active') {
+					return json({ items: live ? [{ id: 'vLive', snippet: { liveChatId: 'chatLive', title: liveTitle } }] : [] });
+				}
+				// A stream scheduled long ago that never went live, and the one scheduled for today.
+				return json({
+					items: [
+						{ id: 'vStale', snippet: { liveChatId: 'chatStale', title: 'Old Stream', scheduledStartTime: '2025-01-01T00:00:00Z' } },
+						{ id: 'vToday', snippet: { liveChatId: 'chatToday', title: 'Today', scheduledStartTime: hourAgo } },
+					],
+				});
+			}
+			if (url.includes('/videos')) {
+				return params.get('id') === 'vLive'
+					? json({ items: [{ snippet: { title: liveTitle, liveBroadcastContent: 'live' }, liveStreamingDetails: { activeLiveChatId: 'chatLive' } }] })
+					: json({ items: [{ snippet: { title: 'Today', liveBroadcastContent: 'upcoming' } }] });
+			}
+			const onLive = params.get('liveChatId') === 'chatLive' && !params.get('pageToken');
+			return json({ items: onLive ? [textItem('m1', 'hello')] : [], nextPageToken: 'next', pollingIntervalMillis: 1 });
+		});
+		const chat = new YouTubeChat({ auth, source: YOUTUBE_SELF, sink, transport: 'poll', viewerIntervalMs: 20, lookupIntervalMs: 60_000 });
+		chat.start();
+		try {
+			await waitFor(() => sink.labels.get('youtube:me') === 'Today', 'the chat of today’s broadcast');
+			live = true;
+			await waitFor(() => sink.events.length > 0, 'a message from the live broadcast');
+			assert.strictEqual(sink.labels.get('youtube:me'), 'Live Now');
+			assert.strictEqual(sink.state('youtube:me'), 'connected');
+
+			liveTitle = 'Renamed';
+			await waitFor(() => sink.labels.get('youtube:me') === 'Renamed', 'the new title');
+			assert.strictEqual(sink.state('youtube:me'), 'connected', 'a rename keeps the status');
+		} finally {
+			chat.dispose();
+		}
+		const chatIds = auth.requests.filter((request) => request.url.includes('/liveChat/')).map((request) => new URL(request.url).searchParams.get('liveChatId'));
+		assert.ok(!chatIds.includes('chatStale'), 'the stale broadcast is never read');
+		const lookups = auth.requests.filter((request) => request.url.includes('/liveBroadcasts')).length;
+		await delay(100);
+		assert.strictEqual(
+			auth.requests.filter((request) => request.url.includes('/liveBroadcasts')).length,
+			lookups,
+			'no more broadcast lookups once disposed',
+		);
+	});
+
+	test('opens a new chat connection once when the broadcast it is reading goes live', async () => {
+		const sink = new RecordingSink();
+		let live = false;
+		let connections = 0;
+		const encoder = new TextEncoder();
+		const auth = new FakeAuth((url, init) => {
+			const params = new URL(url).searchParams;
+			if (url.includes('/liveBroadcasts')) {
+				const wanted = params.get('broadcastStatus') === 'active' ? live : !live;
+				return json({ items: wanted ? [{ id: 'v1', snippet: { liveChatId: 'chat1', title: 'Show' } }] : [] });
+			}
+			if (url.includes('/videos')) {
+				return json({
+					items: [
+						{
+							snippet: { title: 'Show', liveBroadcastContent: live ? 'live' : 'upcoming' },
+							liveStreamingDetails: live ? { activeLiveChatId: 'chat1' } : {},
+						},
+					],
+				});
+			}
+			// Like YouTube's, the stream stays open until the request is cancelled. Only a connection opened
+			// after going live delivers messages, as observed with a connection opened before then.
+			const deliver = live;
+			connections++;
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode(`[${JSON.stringify({ items: deliver ? [textItem('m1', 'hello')] : [] })}\n`));
+					init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason));
+				},
+			});
+			return new Response(body, { status: 200 });
+		});
+		const chat = new YouTubeChat({
+			auth,
+			source: YOUTUBE_SELF,
+			sink,
+			transport: 'stream',
+			streamUrl: 'https://stream.test/chat',
+			viewerIntervalMs: 20,
+			lookupIntervalMs: 60_000,
+		});
+		chat.start();
+		try {
+			await waitFor(() => auth.requests.some((request) => request.url.includes('/videos')) && sink.state('youtube:me') === 'connected', 'the pre-live chat');
+			assert.strictEqual(connections, 1);
+			live = true;
+			await waitFor(() => sink.events.length > 0, 'a message after going live');
+			assert.strictEqual(connections, 2);
+			assert.ok(sink.logs.some((line) => line.includes('went live')));
+			await delay(100);
+			assert.strictEqual(connections, 2, 'one reconnect per broadcast');
 		} finally {
 			chat.dispose();
 		}
