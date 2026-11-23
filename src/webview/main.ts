@@ -1,5 +1,5 @@
 import { formatDuration, type ModerationAction } from '../chat/moderation';
-import type { ChatAuthor, ChatEvent, ChatMessage, Fragment, HistoryEntry, HistoryPage, Platform, Role, SourceInfo, ViewerCounts } from '../chat/types';
+import type { ChatAuthor, ChatEvent, ChatMessage, CommandFeedback, Fragment, HistoryEntry, HistoryPage, Platform, Role, SourceInfo, ViewerCounts } from '../chat/types';
 import type { HostMessage, ViewAction, ViewSettings, WebviewMessage } from '../panel/protocol';
 import { currencyIcon, platformLogo } from './logos';
 
@@ -119,6 +119,11 @@ let platformFilter: PlatformFilter = (() => {
 const rows = new Map<string, HTMLElement>();
 /** The messages behind `rows`, for the user card's history. */
 const shown = new Map<string, ChatMessage>();
+/**
+ * What became of each chat command, by message key. Kept apart from the rows because it can arrive just before its
+ * message, and must survive the row being rendered again.
+ */
+const feedback = new Map<string, CommandFeedback>();
 
 function act(action: ViewAction): void {
 	vscode.postMessage({ type: 'action', action });
@@ -263,7 +268,28 @@ function renderMessage(message: ChatMessage): HTMLElement {
 			row.append(renderHeldActions(message));
 		}
 	}
+	const outcome = feedback.get(message.key);
+	if (outcome) {
+		row.append(renderFeedback(outcome));
+	}
 	return row;
+}
+
+function renderFeedback(outcome: CommandFeedback): HTMLElement {
+	const line = el('div', `command-feedback ${outcome.state}`, outcome.text);
+	line.title = { waiting: 'Chat command waiting', done: 'Chat command ran', refused: 'Chat command did not run' }[outcome.state];
+	return line;
+}
+
+function onFeedback(key: string, outcome: CommandFeedback): void {
+	feedback.set(key, outcome);
+	const row = rows.get(key);
+	if (!row || row.classList.contains('deleted')) {
+		return; // Its message arrives next, and picks this up as it is rendered.
+	}
+	row.querySelector(':scope > .command-feedback')?.remove();
+	row.append(renderFeedback(outcome));
+	followIfStuck();
 }
 
 /**
@@ -445,6 +471,12 @@ function appendMessages(messages: readonly ChatMessage[]): void {
 		rows.delete(oldest.dataset.key ?? '');
 		shown.delete(oldest.dataset.key ?? '');
 		oldest.remove();
+	}
+	// Every message that had feedback waiting for it has now arrived.
+	for (const key of feedback.keys()) {
+		if (!rows.has(key)) {
+			feedback.delete(key);
+		}
 	}
 	if (stick) {
 		log.scrollTop = log.scrollHeight;
@@ -664,6 +696,7 @@ function reset(): void {
 	closeCard();
 	rows.clear();
 	shown.clear();
+	feedback.clear();
 	log.replaceChildren();
 	unseen = 0;
 	stick = true;
@@ -697,7 +730,13 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
 			sources = message.sources;
 			viewerCounts = message.viewers;
 			renderSources();
+			for (const [key, outcome] of Object.entries(message.feedback ?? {})) {
+				feedback.set(key, outcome);
+			}
 			appendMessages(message.messages);
+			break;
+		case 'feedback':
+			onFeedback(message.key, message.feedback);
 			break;
 		case 'events':
 			applyEvents(message.events);

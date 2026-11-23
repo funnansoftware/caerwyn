@@ -112,6 +112,46 @@ suite('Extension', () => {
 		}
 	});
 
+	test('!theme changes the theme the editor shows, and pausing chat controls puts it back', async () => {
+		const caerwyn = () => vscode.workspace.getConfiguration('caerwyn');
+		const workbench = () => vscode.workspace.getConfiguration('workbench');
+		const userTheme = () => workbench().inspect<string>('colorTheme')?.globalValue;
+		assert.strictEqual(userTheme(), undefined, 'the test host starts on the default theme');
+		const kindBefore = vscode.window.activeColorTheme.kind;
+		assert.notStrictEqual(kindBefore, vscode.ColorThemeKind.Light, 'the default theme is not a light one');
+		try {
+			await caerwyn().update('controls.enabled', true, vscode.ConfigurationTarget.Global);
+			await caerwyn().update('simulation.messagesPerSecond', 0, vscode.ConfigurationTarget.Global);
+
+			await vscode.commands.executeCommand('caerwyn.simulateChatCommand', '!theme solarized light', 'twitch', 'broadcaster');
+			await waitFor(() => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light, 'the editor to show Solarized Light', 10000);
+			assert.strictEqual(userTheme(), 'Solarized Light');
+
+			await vscode.commands.executeCommand('caerwyn.toggleChatControls');
+			await waitFor(() => userTheme() === undefined, 'the user’s theme setting to be put back');
+			await waitFor(() => vscode.window.activeColorTheme.kind === kindBefore, 'the editor to show the default theme again', 10000);
+			await vscode.commands.executeCommand('caerwyn.toggleChatControls');
+
+			// Following the system's light or dark mode, VS Code would ignore the change, so it is not made.
+			await vscode.workspace.getConfiguration('window').update('autoDetectColorScheme', true, vscode.ConfigurationTarget.Global);
+			await vscode.commands.executeCommand('caerwyn.simulateChatCommand', '!theme monokai', 'twitch', 'broadcaster');
+			await delay(500);
+			assert.strictEqual(userTheme(), undefined, 'nothing written while VS Code follows the system');
+		} finally {
+			await vscode.workspace.getConfiguration('window').update('autoDetectColorScheme', undefined, vscode.ConfigurationTarget.Global);
+			const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as { chatControlsPaused(): boolean };
+			if (api.chatControlsPaused()) {
+				await vscode.commands.executeCommand('caerwyn.toggleChatControls');
+			}
+			await caerwyn().update('controls.enabled', undefined, vscode.ConfigurationTarget.Global);
+			await caerwyn().update('simulation.messagesPerSecond', undefined, vscode.ConfigurationTarget.Global);
+			await workbench().update('colorTheme', undefined, vscode.ConfigurationTarget.Global);
+			await resetSimulation();
+			await vscode.window.tabGroups.close(chatTabs());
+			await waitFor(() => chatTabs().length === 0, 'the chat tab to close');
+		}
+	});
+
 	test('simulating an event switches simulation on, opens the tab and marks it as simulated', async () => {
 		const enabled = () => vscode.workspace.getConfiguration('caerwyn').get<boolean>('simulation.enabled');
 		assert.strictEqual(enabled(), false);

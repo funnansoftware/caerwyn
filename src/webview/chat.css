@@ -386,6 +386,35 @@ body.view {
 	color: var(--vscode-errorForeground);
 }
 
+/* What became of a chat command, under the viewer's message. Muted: it is for the streamer, and may be on stream. */
+.command-feedback {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.9em;
+	overflow-wrap: anywhere;
+}
+
+.command-feedback::before {
+	margin-right: 0.35em;
+}
+
+.command-feedback.waiting {
+	font-style: italic;
+}
+
+.command-feedback.waiting::before {
+	content: '⏳';
+}
+
+.command-feedback.done::before {
+	content: '✓';
+	color: var(--vscode-testing-iconPassed, var(--vscode-descriptionForeground));
+}
+
+.command-feedback.refused::before {
+	content: '✗';
+	color: var(--vscode-errorForeground);
+}
+
 .reply {
 	overflow: hidden;
 	color: var(--vscode-descriptionForeground);

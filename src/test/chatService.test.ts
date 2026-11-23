@@ -91,6 +91,28 @@ suite('ChatService', () => {
 		assert.strictEqual(batches[0].length, 4, 'the duplicate is not forwarded');
 	});
 
+	test('keeps chat command feedback for messages it still holds, and forgets it with them', () => {
+		const fired: string[] = [];
+		service.onFeedback(({ key, feedback }) => fired.push(`${key}=${feedback.text}`));
+		for (const id of ['a', 'b', 'c']) {
+			emit({ type: 'message', message: message(id) });
+		}
+		service.setFeedback('twitch:a', { state: 'done', text: 'ran a' });
+		service.setFeedback('twitch:b', { state: 'waiting', text: 'runs in 5s' });
+		service.setFeedback('twitch:b', { state: 'refused', text: 'cancelled' });
+		service.setFeedback('twitch:unknown', { state: 'done', text: 'never shown' });
+		assert.deepStrictEqual(fired, ['twitch:a=ran a', 'twitch:b=runs in 5s', 'twitch:b=cancelled'], 'only messages it holds');
+		assert.deepStrictEqual(Object.keys(service.commandFeedback), ['twitch:a', 'twitch:b']);
+
+		emit({ type: 'message', message: message('d') }); // Trims `a`: the buffer holds 3.
+		emit({ type: 'delete', key: 'twitch:b' });
+		assert.deepStrictEqual(service.commandFeedback, {}, 'trimmed and deleted messages take their feedback with them');
+
+		service.setFeedback('twitch:c', { state: 'done', text: 'ran c' });
+		service.clearMessages();
+		assert.deepStrictEqual(service.commandFeedback, {});
+	});
+
 	test('keeps viewer counts for known sources, reports changes together, and forgets a source’s count with it', async () => {
 		await service.addSource(TWITCH_SELF);
 		const sink = (service as unknown as { sink: ChatSink }).sink;

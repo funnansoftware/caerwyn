@@ -70,19 +70,30 @@ Problems are logged to the **Caerwyn** output channel.
 
 ## Chat controls
 
-Chat controls let viewers in your own chat run commands, such as `!theme`, that change your editor. They are off until you switch on `caerwyn.controls.enabled`. No commands are available yet; they will be added one at a time.
+Chat controls let viewers in your own chat run commands, such as `!theme`, that change your editor. They are off until you switch on `caerwyn.controls.enabled`.
 
 - Only your own Twitch channel and YouTube broadcast, added with **Sign In**, are listened to. A chat you only read, even your own channel added by name, is never listened to.
 - Each command says who may use it (everyone, subscribers and YouTube members, VIPs, moderators or only you) and how often, overall and per viewer. You are never held back by a cooldown, and your own use does not start one for viewers. A command that cannot be carried out, such as a theme name with a typo, does not use up the viewer's turn.
 - A viewer's command waits `caerwyn.controls.delaySeconds` before it runs. Deleting the message, or timing out or banning the viewer, in that time cancels it. Your own commands and your moderators' run at once.
 - While controls are on, a status bar item shows whether they are listening. Click it, or run **Caerwyn: Pause or Resume Chat Controls**, to stop them at once. A pause lasts until you resume, even across restarts, and other VS Code windows honour it too, although their status bar may not show it until it next updates.
-- What happens to each command, including ones that were refused, is logged to the **Caerwyn** output channel.
+- What became of each command shows under the viewer's message in the chat: ⏳ while it waits out the delay, ✓ with what it did (*Monokai for 5 min*), or ✗ with why it did not run (*on cooldown, 40s left*, *No theme is called "monokai dark"*, *chat controls are off*). Viewers see this only if your chat view is on stream; Caerwyn does not reply in chat. Every outcome is also logged to the **Caerwyn** output channel.
+- While chat controls are off, the first viewer command of the session brings up a notice with a button to switch them on.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `caerwyn.controls.enabled` | `false` | Lets your chat run commands. |
 | `caerwyn.controls.delaySeconds` | `5` | How long a viewer's command waits, so a moderator can remove it first. |
 | `caerwyn.controls.commands` | `{}` | Changes a command's defaults, by name: `enabled`, `allowed`, `cooldownSeconds`, `userCooldownSeconds`. For example `{ "theme": { "allowed": "subscriber", "cooldownSeconds": 120 } }`. |
+| `caerwyn.controls.theme.durationSeconds` | `300` | How long a theme picked with `!theme` stays, from 10 seconds to an hour. |
+| `caerwyn.controls.theme.choices` | `[]` | The themes chat may pick, by name. Empty allows every installed theme. |
+
+### Commands
+
+| Command | Who, by default | Cooldown, overall / per viewer | What it does |
+| --- | --- | --- | --- |
+| `!theme <name>` | Everyone | 60 s / 5 min | Switches the color theme for `caerwyn.controls.theme.durationSeconds`, then puts yours back. Names are matched loosely: `!theme solarized light`, `!theme monokai`. `!theme random` picks any installed theme except high contrast ones. Naming a high contrast or very bright theme still works; use `caerwyn.controls.theme.choices` to rule them out. |
+
+`!theme` writes `workbench.colorTheme` in your user settings, never the workspace's. Your theme comes back when the time is up and when you pause chat controls. Caerwyn also puts it back as the window that set it closes or reloads; closing a different window leaves it running. If that does not happen, for example after a crash, it comes back the next time Caerwyn starts (when you open the chat), once its time is up. If you change the theme yourself in the meantime, yours is kept. A name that matches no theme, or more than one, is turned down without using up the viewer's turn; so is any `!theme` while the workspace sets its own theme or `window.autoDetectColorScheme` is on, since VS Code would ignore the change. If you use Settings Sync, the chat theme is synced to your other machines while it lasts.
 
 These settings are only read from your user settings, never from a workspace's `.vscode/settings.json`, so opening someone else's project cannot hand your editor to chat.
 
@@ -122,6 +133,6 @@ npm install
 - `src/chat/youtube/` reads YouTube chat through the Data API's streaming method.
 - `src/chat/simulation/` produces simulated chat. `sampleData.ts` holds the made-up chatters and lines; `simulatedChat.ts` lists every event it can produce.
 - `src/chat/chatService.ts` owns the list of chat sources, their connections and the recent message history.
-- `src/controls/chatControls.ts` picks chat commands out of your own chat and decides whether each may run: who sent it, cooldowns, the delay and the pause switch. Commands register with `ChatControls.register()`.
+- `src/controls/chatControls.ts` picks chat commands out of your own chat and decides whether each may run: who sent it, cooldowns, the delay and the pause switch. Commands register with `ChatControls.register()`. `themeControl.ts` is the `!theme` command, and `vscodeThemeHost.ts` connects it to the editor's settings.
 - `src/chat/history.ts` saves each viewer's messages to disk, one JSON Lines file per viewer per channel, for the user card. Both platforms are mapped to the types in `src/chat/types.ts`.
 - `src/panel/` hosts the chat tab, and `src/webview/` is the script and stylesheet that render it. The webview is type-checked separately because it runs in a browser context.

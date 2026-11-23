@@ -252,6 +252,23 @@
             }
           }
         },
+        "caerwyn.controls.theme.durationSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "maximum": 3600,
+          "scope": "application",
+          "markdownDescription": "How long a color theme picked with `!theme` stays before yours comes back. Pausing chat controls puts yours back at once."
+        },
+        "caerwyn.controls.theme.choices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "application",
+          "markdownDescription": "The color themes chat may pick with `!theme`, by the names shown in **Preferences: Color Theme**. Leave empty to allow every installed theme."
+        },
         "caerwyn.simulation.enabled": {
           "type": "boolean",
           "default": false,

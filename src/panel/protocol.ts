@@ -1,5 +1,5 @@
 import type { ModerationRequest } from '../chat/moderation';
-import type { ChatEvent, ChatMessage, HistoryPage, HistoryQuery, SourceInfo, ViewerCounts } from '../chat/types';
+import type { ChatEvent, ChatMessage, CommandFeedback, HistoryPage, HistoryQuery, SourceInfo, ViewerCounts } from '../chat/types';
 
 // Messages exchanged between the extension host and the chat webview. The webview imports only types from here.
 
@@ -9,13 +9,23 @@ export interface ViewSettings {
 }
 
 export type HostMessage =
-	| { type: 'init'; messages: readonly ChatMessage[]; sources: SourceInfo[]; viewers: ViewerCounts; settings: ViewSettings }
+	| {
+			type: 'init';
+			messages: readonly ChatMessage[];
+			sources: SourceInfo[];
+			viewers: ViewerCounts;
+			settings: ViewSettings;
+			/** What became of the chat commands among `messages`, by message key. */
+			feedback: Record<string, CommandFeedback>;
+	  }
 	| { type: 'events'; events: ChatEvent[] }
 	| { type: 'sources'; sources: SourceInfo[] }
 	/** Kept apart from `sources` because it changes far more often, and must not rebuild the source chips. */
 	| { type: 'viewers'; viewers: ViewerCounts }
 	| { type: 'settings'; settings: ViewSettings }
 	| { type: 'reset' }
+	/** What became of the chat command in one message. It can arrive just before the message itself. */
+	| { type: 'feedback'; key: string; feedback: CommandFeedback }
 	/** The outcome of a `moderate` request: no `error` means it was carried out. */
 	| { type: 'moderationResult'; requestId: number; error?: string }
 	/** The answer to a `history` request. No `page` means it could not be read. */

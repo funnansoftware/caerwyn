@@ -112,6 +112,13 @@ export interface ChatMessage {
 	replyTo?: { name: string; text: string };
 }
 
+/** What became of a chat command, shown under the viewer's message. */
+export interface CommandFeedback {
+	/** `waiting`: it runs after a delay. `done`: it ran. `refused`: it did not run, and `text` says why. */
+	state: 'waiting' | 'done' | 'refused';
+	text: string;
+}
+
 export type ChatEvent =
 	| { type: 'message'; message: ChatMessage }
 	/** A message already sent has changed, such as when what it cost arrives after it. Replaces it by `key`. */

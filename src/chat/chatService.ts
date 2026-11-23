@@ -9,6 +9,7 @@ import {
 	ChatMessage,
 	ChatSink,
 	ChatSource,
+	CommandFeedback,
 	Platform,
 	RealSource,
 	SourceInfo,
@@ -62,11 +63,14 @@ export class ChatService {
 	private readonly sourcesEmitter = new Emitter<SourceInfo[]>();
 	private readonly resetEmitter = new Emitter<void>();
 	private readonly viewerCountsEmitter = new Emitter<ViewerCounts>();
+	private readonly feedbackEmitter = new Emitter<{ key: string; feedback: CommandFeedback }>();
 	readonly onEvents = this.eventsEmitter.event;
 	readonly onSources = this.sourcesEmitter.event;
 	readonly onReset = this.resetEmitter.event;
 	/** Fires with every source's current viewer count whenever one changes. */
 	readonly onViewerCounts = this.viewerCountsEmitter.event;
+	/** Fires when a chat command's outcome is known or changes. */
+	readonly onFeedback = this.feedbackEmitter.event;
 
 	private sourceList: RealSource[];
 	private readonly statuses = new Map<string, SourceStatus>();
@@ -76,6 +80,8 @@ export class ChatService {
 	private audienceTimer: NodeJS.Timeout | undefined;
 	private buffer: ChatMessage[] = [];
 	private readonly keys = new Set<string>();
+	/** What became of each chat command still in the buffer, by message key. */
+	private readonly feedback = new Map<string, CommandFeedback>();
 	private pending: ChatEvent[] = [];
 	private flushTimer: NodeJS.Timeout | undefined;
 	private readonly rebuildTimers = new Map<Platform, NodeJS.Timeout>();
@@ -123,6 +129,20 @@ export class ChatService {
 			status: this.statuses.get(source.id) ?? { state: 'idle' },
 			canModerate: source.kind === 'simulated',
 		}));
+	}
+
+	/** The outcome of every chat command still in the buffer, by message key, for a view that has just opened. */
+	get commandFeedback(): Record<string, CommandFeedback> {
+		return Object.fromEntries(this.feedback);
+	}
+
+	/** Records what became of the chat command in a message, for every view to show under it. */
+	setFeedback(key: string, feedback: CommandFeedback): void {
+		if (!this.keys.has(key)) {
+			return; // Already removed or trimmed: there is nothing to show it under.
+		}
+		this.feedback.set(key, feedback);
+		this.feedbackEmitter.fire({ key, feedback });
 	}
 
 	/** How many people watch each source that is live and shares its count. */
@@ -321,6 +341,7 @@ export class ChatService {
 	clearMessages(): void {
 		this.buffer = [];
 		this.keys.clear();
+		this.feedback.clear();
 		this.pending = [];
 		this.simulation?.forget();
 		this.resetEmitter.fire();
@@ -337,6 +358,7 @@ export class ChatService {
 		this.sourcesEmitter.dispose();
 		this.resetEmitter.dispose();
 		this.viewerCountsEmitter.dispose();
+		this.feedbackEmitter.dispose();
 	}
 
 	/** Coalesces rebuilds, so signing in and adding the account's own source reconnects only once. */
@@ -454,7 +476,7 @@ export class ChatService {
 				this.buffer.push(event.message);
 				const max = Math.max(1, this.options.getConfig().maxMessages);
 				while (this.buffer.length > max) {
-					this.keys.delete((this.buffer.shift() as ChatMessage).key);
+					this.forget((this.buffer.shift() as ChatMessage).key);
 				}
 				break;
 			}
@@ -499,13 +521,18 @@ export class ChatService {
 		this.options.history?.record(event);
 	}
 
+	private forget(key: string): void {
+		this.keys.delete(key);
+		this.feedback.delete(key);
+	}
+
 	/** Removed messages leave the buffer, so reopening the tab never shows them again. */
 	private drop(predicate: (message: ChatMessage) => boolean): void {
 		this.buffer = this.buffer.filter((message) => {
 			if (!predicate(message)) {
 				return true;
 			}
-			this.keys.delete(message.key);
+			this.forget(message.key);
 			return false;
 		});
 	}

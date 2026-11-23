@@ -7,7 +7,9 @@ import {
 	ChatControls,
 	ChatControlsConfig,
 	CommandRejected,
+	ControlOutcome,
 	ControlReport,
+	describeReport,
 	parseCommand,
 } from '../controls/chatControls';
 import { Emitter } from '../util/emitter';
@@ -106,6 +108,29 @@ suite('ChatControls', () => {
 		assert.deepStrictEqual(outcomes(), ['ran'], 'unknown commands are not reported');
 	});
 
+	test('passes on what a command says it did', async () => {
+		controls.register(command({ run: async () => 'Monokai for 5 min' }));
+		send(chat('!theme monokai'));
+		await waitFor(() => outcomes().includes('ran'), 'the command to run');
+		assert.strictEqual(reports[0].detail, 'Monokai for 5 min');
+	});
+
+	test('describes each outcome in a few words for the chat view', () => {
+		const message = chat('!theme');
+		const describe = (outcome: ControlOutcome, detail?: string) => describeReport({ command: 'theme', message, outcome, detail });
+		assert.deepStrictEqual(describe('ran', 'Monokai for 5 min'), { state: 'done', text: 'Monokai for 5 min' });
+		assert.deepStrictEqual(describe('ran'), { state: 'done', text: 'done' });
+		assert.deepStrictEqual(describe('accepted', 'runs in 5s'), { state: 'waiting', text: 'runs in 5s' });
+		assert.deepStrictEqual(describe('rejected', 'No theme is called "x".'), { state: 'refused', text: 'No theme is called "x".' });
+		assert.deepStrictEqual(describe('off'), { state: 'refused', text: 'chat controls are off' });
+		assert.deepStrictEqual(describe('denied', 'for VIPs and up'), { state: 'refused', text: '!theme is for VIPs and up' });
+		assert.deepStrictEqual(describe('cooldown', '40s left'), { state: 'refused', text: 'on cooldown, 40s left' });
+		const outcomesList: ControlOutcome[] = ['ran', 'rejected', 'failed', 'off', 'disabled', 'paused', 'denied', 'cooldown', 'cancelled', 'busy', 'stale', 'accepted'];
+		for (const outcome of outcomesList) {
+			assert.ok(describe(outcome).text.length > 0, outcome);
+		}
+	});
+
 	test('answers to aliases under the command name, and rejects a name taken twice', async () => {
 		controls.register(command({ aliases: ['colors'] }));
 		assert.throws(() => controls.register(command({ name: 'colors', aliases: [] })));
@@ -115,16 +140,23 @@ suite('ChatControls', () => {
 		assert.strictEqual(runs[0].command, 'theme');
 	});
 
-	test('does nothing while switched off, and ignores chats that are not the user’s own', async () => {
+	test('runs nothing while switched off, but says so; ignores chats that are not the user’s own', async () => {
 		controls.register(command());
 		config.enabled = false;
-		send(chat('!theme'));
+		send(chat('!theme'), chat('!discord'));
+		await delay(20);
+		assert.deepStrictEqual(outcomes(), ['off'], 'a known command is reported, so the user can tell why nothing happened');
+		assert.strictEqual(runs.length, 0);
+
+		reports.length = 0;
 		config.enabled = true;
 		send(chat('!theme', { sourceId: 'twitch:somebody_else' }));
 		send({ ...chat('!theme'), held: { messageId: 'x', state: 'held', fragments: [] } });
 		send(chat('!theme', { userId: '' }));
+		config.enabled = false;
+		send(chat('!theme', { sourceId: 'twitch:somebody_else' }));
 		await delay(20);
-		assert.deepStrictEqual(reports, []);
+		assert.deepStrictEqual(reports, [], 'not even "off" for a chat the user only reads');
 	});
 
 	test('ignores old messages replayed after a reconnect', async () => {
@@ -283,7 +315,8 @@ suite('ChatControls', () => {
 		setConfig({ enabled: 'false', delaySeconds: 0, commands: {} });
 		assert.strictEqual(controls.enabled, false, 'only `true` switches controls on');
 		send(chat('!theme'));
-		assert.deepStrictEqual(reports, []);
+		assert.deepStrictEqual(outcomes(), ['off']);
+		reports.length = 0;
 
 		setConfig({ enabled: true, delaySeconds: '0', commands: null });
 		send(chat('!theme'));

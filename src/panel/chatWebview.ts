@@ -48,6 +48,7 @@ export class ChatWebview implements vscode.Disposable {
 			}),
 			service.onReset(() => this.post({ type: 'reset' })),
 			service.onViewerCounts((viewers) => this.post({ type: 'viewers', viewers })),
+			service.onFeedback(({ key, feedback }) => this.post({ type: 'feedback', key, feedback })),
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				if (event.affectsConfiguration('caerwyn')) {
 					this.post({ type: 'settings', settings: viewSettings() });
@@ -80,6 +81,7 @@ export class ChatWebview implements vscode.Disposable {
 				sources: this.service.sources,
 				viewers: this.service.viewerCounts,
 				settings: viewSettings(),
+				feedback: this.service.commandFeedback,
 			});
 		} else if (message?.type === 'action' && VIEW_ACTIONS.includes(message.action as ViewAction)) {
 			void vscode.commands.executeCommand(`caerwyn.${message.action}`);

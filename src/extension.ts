@@ -8,6 +8,7 @@ import { ChatHistory } from './chat/history';
 import {
 	SIMULATED_ACTIONS,
 	SIMULATED_EVENTS,
+	SIMULATED_SOURCES,
 	SIMULATED_SPEAKERS,
 	SimulatedEventKind,
 	SimulatedSpeaker,
@@ -16,8 +17,10 @@ import {
 import { Account, Platform, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannelSource, youtubeVideoSource } from './chat/types';
 import { parseVideoId } from './chat/youtube/videoId';
 import { YouTubeTransport } from './chat/youtube/youtubeChat';
-import { ChatCommand, ChatControls, CommandSettings, parseCommandText } from './controls/chatControls';
+import { ChatCommand, ChatControls, CommandSettings, describeReport, parseCommandText } from './controls/chatControls';
 import { ControlsStatusBar } from './controls/controlsStatusBar';
+import { DEFAULT_THEME_SECONDS, ThemeControl } from './controls/themeControl';
+import { vscodeThemeHost } from './controls/vscodeThemeHost';
 import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
 import { CHAT_SIDEBAR_VIEW_ID, ChatSidebar } from './panel/chatSidebar';
 import { ChatWebview } from './panel/chatWebview';
@@ -58,6 +61,9 @@ function parseTwitchLogin(input: string): string | undefined {
 	const text = input.trim().replace(/^(https?:\/\/)?(www\.)?twitch\.tv\//i, '').replace(/^[@#]/, '').split(/[/?]/)[0];
 	return TWITCH_LOGIN.test(text) ? text.toLowerCase() : undefined;
 }
+
+/** Kept so `deactivate` can put the user's color theme back before the window goes. */
+let themeControl: ThemeControl | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
 	const output = vscode.window.createOutputChannel('Caerwyn', { log: true });
@@ -131,6 +137,23 @@ export function activate(context: vscode.ExtensionContext) {
 				enabled: config.get<boolean>('enabled', false),
 				delaySeconds: config.get<number>('delaySeconds', 5),
 				commands: config.get<Record<string, CommandSettings>>('commands', {}),
+			};
+		},
+		log,
+	});
+
+	// Every view shows what became of each command under its message, so the user can tell why one did nothing.
+	const showFeedback = controls.onReport((report) => service.setFeedback(report.message.key, describeReport(report)));
+
+	themeControl = new ThemeControl({
+		controls,
+		host: vscodeThemeHost(),
+		state: context.globalState,
+		getConfig: () => {
+			const config = vscode.workspace.getConfiguration('caerwyn.controls.theme');
+			return {
+				durationSeconds: config.get<number>('durationSeconds', DEFAULT_THEME_SECONDS),
+				choices: config.get<string[]>('choices', []),
 			};
 		},
 		log,
@@ -245,6 +268,28 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	};
 
+	/** Shown once a session, the first time a viewer uses a command while chat controls are off. */
+	let offNoticeShown = false;
+	const OFF_NOTICE_KEY = 'caerwyn.controls.offNoticeDismissed';
+	const noticeOff = controls.onReport(async (report) => {
+		const simulated = SIMULATED_SOURCES.some((source) => source.id === report.message.sourceId);
+		// Simulated commands are the user's own doing, and "Simulate Chat Command" already says so.
+		if (report.outcome !== 'off' || simulated || offNoticeShown || context.globalState.get<boolean>(OFF_NOTICE_KEY)) {
+			return;
+		}
+		offNoticeShown = true;
+		const answer = await vscode.window.showInformationMessage(
+			`${report.message.author.name} used !${report.command}, but chat controls are off, so nothing happened.`,
+			'Turn On',
+			"Don't Show Again",
+		);
+		if (answer === 'Turn On') {
+			await vscode.workspace.getConfiguration('caerwyn').update('controls.enabled', true, vscode.ConfigurationTarget.Global);
+		} else if (answer === "Don't Show Again") {
+			await context.globalState.update(OFF_NOTICE_KEY, true);
+		}
+	});
+
 	const toggleChatControls = async () => {
 		if (!controls.enabled) {
 			await offerControlsSettings();
@@ -323,6 +368,9 @@ export function activate(context: vscode.ExtensionContext) {
 		output,
 		// Before the service, so no command waiting out its delay runs once chat is gone.
 		new ControlsStatusBar(controls, service),
+		showFeedback,
+		noticeOff,
+		themeControl,
 		{ dispose: () => controls.dispose() },
 		{ dispose: () => service.dispose() },
 		// After the service, so the last messages it handled are saved.
@@ -369,4 +417,6 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 }
 
-export function deactivate() {}
+export function deactivate(): Promise<void> | undefined {
+	return themeControl?.shutdown();
+}

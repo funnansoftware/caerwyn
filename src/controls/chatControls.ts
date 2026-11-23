@@ -1,5 +1,5 @@
 import type { StateStore } from '../chat/chatService';
-import type { ChatEvent, ChatMessage, Role } from '../chat/types';
+import type { ChatEvent, ChatMessage, CommandFeedback, Role } from '../chat/types';
 import { Disposable, Emitter } from '../util/emitter';
 
 // Lets viewers in the user's own chat run commands such as `!theme dracula` that change the editor.
@@ -12,6 +12,15 @@ export const AUDIENCES = ['everyone', 'subscriber', 'vip', 'moderator', 'broadca
 export type Audience = (typeof AUDIENCES)[number];
 
 /** Each role's place in `AUDIENCES`. Roles not listed, such as `verified`, count as everyone. */
+/** Who may use a command, as said to the user. */
+const AUDIENCE_TEXT: Record<Audience, string> = {
+	everyone: 'for everyone',
+	subscriber: 'for subscribers and up',
+	vip: 'for VIPs and up',
+	moderator: 'for moderators and the streamer',
+	broadcaster: 'only for the streamer',
+};
+
 const ROLE_RANK: Partial<Record<Role, number>> = { subscriber: 1, vip: 2, moderator: 3, broadcaster: 4 };
 const MODERATOR_RANK = 3;
 
@@ -39,7 +48,8 @@ export interface ChatCommand {
 	/** One line for the user, shown in the status bar tooltip. */
 	description: string;
 	defaults: CommandDefaults;
-	run(invocation: ChatCommandInvocation): void | Promise<void>;
+	/** Carries out the command. It may return a few words on what it did, shown under the message, such as "Monokai for 5 min". */
+	run(invocation: ChatCommandInvocation): void | string | Promise<void | string>;
 }
 
 /** The user's overrides for one command, from settings. */
@@ -65,6 +75,8 @@ export type ControlOutcome =
 	| 'rejected'
 	/** The command threw. Its cooldowns are not charged. */
 	| 'failed'
+	/** Chat controls are switched off, so nothing runs. */
+	| 'off'
 	/** The command is switched off in settings. */
 	| 'disabled'
 	| 'paused'
@@ -253,9 +265,7 @@ export class ChatControls {
 	private onEvent(event: ChatEvent): void {
 		switch (event.type) {
 			case 'message':
-				if (this.enabled) {
-					this.onMessage(event.message);
-				}
+				this.onMessage(event.message);
 				return;
 			case 'delete':
 				this.cancelWhere((entry) => entry.invocation.message.key === event.key);
@@ -282,6 +292,11 @@ export class ChatControls {
 		}
 		const invocation: ChatCommandInvocation = { command: command.name, args: parsed.args, message };
 		const report = (outcome: ControlOutcome, detail?: string) => this.report(invocation, outcome, detail);
+		if (!this.enabled) {
+			// Said rather than ignored, so the user can tell why a viewer's command did nothing.
+			report('off');
+			return;
+		}
 
 		const now = this.now();
 		if (now - message.timestamp > MAX_AGE_MS) {
@@ -299,7 +314,7 @@ export class ChatControls {
 		}
 		const rank = rankOf(message.author.roles);
 		if (rank < AUDIENCES.indexOf(settings.allowed)) {
-			report('denied', `needs ${settings.allowed}`);
+			report('denied', AUDIENCE_TEXT[settings.allowed]);
 			return;
 		}
 		const isBroadcaster = message.author.roles.includes('broadcaster');
@@ -347,8 +362,8 @@ export class ChatControls {
 				this.report(invocation, 'cancelled');
 				return;
 			}
-			await command.run(invocation);
-			this.report(invocation, 'ran');
+			const summary = await command.run(invocation);
+			this.report(invocation, 'ran', typeof summary === 'string' && summary ? summary : undefined);
 		} catch (error) {
 			// Nothing happened, so the viewer has not had their turn.
 			this.refund(charges);
@@ -434,6 +449,37 @@ export class ChatControls {
 		const { command, message } = invocation;
 		this.options.log(`Chat control !${command} from ${message.author.name} (${message.platform}): ${outcome}${detail ? `, ${detail}` : ''}`);
 		this.reportEmitter.fire({ command, message, outcome, detail });
+	}
+}
+
+/** What became of a command, in a few words, for showing under the viewer's message. */
+export function describeReport(report: ControlReport): CommandFeedback {
+	const { outcome, detail, command } = report;
+	switch (outcome) {
+		case 'accepted':
+			return { state: 'waiting', text: detail ?? 'waiting' };
+		case 'ran':
+			return { state: 'done', text: detail ?? 'done' };
+		case 'rejected':
+			return { state: 'refused', text: detail ?? 'turned down' };
+		case 'failed':
+			return { state: 'refused', text: detail ? `did not work: ${detail}` : 'did not work' };
+		case 'off':
+			return { state: 'refused', text: 'chat controls are off' };
+		case 'paused':
+			return { state: 'refused', text: 'chat controls are paused' };
+		case 'disabled':
+			return { state: 'refused', text: `!${command} is switched off` };
+		case 'denied':
+			return { state: 'refused', text: detail ? `!${command} is ${detail}` : 'not allowed' };
+		case 'cooldown':
+			return { state: 'refused', text: detail ? `on cooldown, ${detail}` : 'on cooldown' };
+		case 'cancelled':
+			return { state: 'refused', text: 'cancelled' };
+		case 'busy':
+			return { state: 'refused', text: 'too many commands waiting' };
+		case 'stale':
+			return { state: 'refused', text: 'too old to run' };
 	}
 }
 
