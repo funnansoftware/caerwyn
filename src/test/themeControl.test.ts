@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import type { StateStore } from '../chat/chatService';
 import { ChatEvent, ChatMessage } from '../chat/types';
 import { ChatControls, ChatControlsConfig, CommandRejected } from '../controls/chatControls';
-import { ThemeControl, ThemeControlConfig, ThemeHost, ThemeInfo, Timers, findTheme, formatDuration } from '../controls/themeControl';
+import { ThemeControl, ThemeControlConfig, ThemeHost, ThemeInfo, ThemeSetting, Timers, findTheme, formatDuration } from '../controls/themeControl';
 import { Emitter } from '../util/emitter';
 
 class MemoryState implements StateStore {
@@ -21,6 +21,7 @@ class MemoryState implements StateStore {
 
 const THEMES: ThemeInfo[] = [
 	{ id: 'Dark 2026', label: 'Dark 2026', kind: 'dark' },
+	{ id: 'Light 2026', label: 'Light 2026', kind: 'light' },
 	{ id: 'Monokai', label: 'Monokai', kind: 'dark' },
 	{ id: 'Monokai Dimmed', label: 'Monokai Dimmed', kind: 'dark' },
 	{ id: 'Solarized Dark', label: 'Solarized Dark', kind: 'dark' },
@@ -29,23 +30,59 @@ const THEMES: ThemeInfo[] = [
 	{ id: 'Visual Studio Dark', label: 'Dark (Visual Studio)', kind: 'dark' },
 ];
 
-/** An editor whose user setting is `user`; with none, the default `Dark 2026` shows. */
+/** VS Code's defaults for each theme setting. */
+const DEFAULTS: Record<ThemeSetting, string> = { colorTheme: 'Dark 2026', preferredDarkColorTheme: 'Dark 2026', preferredLightColorTheme: 'Light 2026' };
+
+/**
+ * An editor with the user's theme settings in `settings`. It shows `colorTheme`, or while `following` the system,
+ * the preferred theme for the system's mode.
+ */
 class FakeHost implements ThemeHost {
-	user: string | undefined;
+	readonly settings: Partial<Record<ThemeSetting, string>> = {};
+	following = false;
+	system: 'dark' | 'light' = 'dark';
 	blockedBy: string | undefined;
 	failWrites = 0;
 	readonly writes: (string | undefined)[] = [];
+	/** Which setting each write went to. */
+	readonly written: ThemeSetting[] = [];
+
+	/** The user's own `workbench.colorTheme`. */
+	get user(): string | undefined {
+		return this.settings.colorTheme;
+	}
+	set user(theme: string | undefined) {
+		this.set('colorTheme', theme);
+	}
+
+	/** The theme on screen. */
+	get showing(): string {
+		const setting = this.following ? (this.system === 'dark' ? 'preferredDarkColorTheme' : 'preferredLightColorTheme') : 'colorTheme';
+		return this.currentTheme(setting);
+	}
+
 	themes = () => THEMES;
-	userTheme = () => this.user;
-	currentTheme = () => this.user ?? 'Dark 2026';
+	followsSystem = () => this.following;
+	showingKind = () => THEMES.find((theme) => theme.id === this.showing)?.kind ?? 'dark';
+	userTheme = (setting: ThemeSetting) => this.settings[setting];
+	currentTheme = (setting: ThemeSetting) => this.settings[setting] ?? DEFAULTS[setting];
 	blocked = () => this.blockedBy;
-	async setUserTheme(theme: string | undefined): Promise<void> {
+	async setUserTheme(setting: ThemeSetting, theme: string | undefined): Promise<void> {
 		if (this.failWrites > 0) {
 			this.failWrites--;
 			throw new Error('settings.json has unsaved changes');
 		}
 		this.writes.push(theme);
-		this.user = theme;
+		this.written.push(setting);
+		this.set(setting, theme);
+	}
+
+	private set(setting: ThemeSetting, theme: string | undefined): void {
+		if (theme === undefined) {
+			delete this.settings[setting];
+		} else {
+			this.settings[setting] = theme;
+		}
 	}
 }
 
@@ -187,7 +224,13 @@ suite('ThemeControl', () => {
 		host.user = 'Solarized Dark';
 		assert.strictEqual(await run('monokai'), 'Monokai for 5 min', 'says what it did, for the chat view');
 		assert.strictEqual(host.user, 'Monokai');
-		assert.deepStrictEqual({ ...record(), owner: undefined }, { original: 'Solarized Dark', chatTheme: 'Monokai', until: now + 300_000, owner: undefined });
+		assert.deepStrictEqual({ ...record(), owner: undefined }, {
+			original: 'Solarized Dark',
+			chatTheme: 'Monokai',
+			until: now + 300_000,
+			owner: undefined,
+			setting: 'colorTheme',
+		});
 		assert.strictEqual(timers.delay, 300_000);
 
 		timers.fire();
@@ -337,6 +380,72 @@ suite('ThemeControl', () => {
 		timers.fire();
 		await settle();
 		assert.ok(logs.some((line) => line.includes('settings unreadable')));
+	});
+
+	test('while VS Code follows the system, changes the preferred theme for the mode it is in, and only that', async () => {
+		host.following = true;
+		host.settings.preferredDarkColorTheme = 'Solarized Dark';
+		await run('solarized light');
+		assert.strictEqual(host.showing, 'Solarized Light');
+		assert.deepStrictEqual(host.written, ['preferredDarkColorTheme']);
+		assert.strictEqual(host.user, undefined, 'workbench.colorTheme is left alone');
+
+		timers.fire();
+		await settle();
+		assert.strictEqual(host.settings.preferredDarkColorTheme, 'Solarized Dark');
+		assert.strictEqual(host.showing, 'Solarized Dark');
+
+		host.system = 'light';
+		await run('monokai');
+		assert.deepStrictEqual(host.written.slice(2), ['preferredLightColorTheme'], 'in light mode, the light preference');
+		await theme.shutdown();
+		assert.strictEqual(host.settings.preferredLightColorTheme, undefined, 'removed again, as the user had not set it');
+	});
+
+	test('a light chat theme in the dark preference does not make the next !theme go to the light one', async () => {
+		host.following = true;
+		await run('solarized light');
+		assert.strictEqual(host.showingKind(), 'light', 'a light theme shows, though the system is still dark');
+		await run('monokai');
+		assert.deepStrictEqual(host.written, ['preferredDarkColorTheme', 'preferredDarkColorTheme']);
+		assert.strictEqual(host.showing, 'Monokai');
+		await assert.rejects(run('monokai'), /already showing/, 'what is showing is read from the same preference');
+
+		await theme.shutdown();
+		assert.strictEqual(host.settings.preferredDarkColorTheme, undefined, 'the user’s preference before the first chat theme');
+	});
+
+	test('if the system switches mode during a chat theme, the next one puts the first back before starting', async () => {
+		host.following = true;
+		host.settings.preferredDarkColorTheme = 'Solarized Dark';
+		await run('monokai');
+		// The system turns light. The chat theme is still in the dark preference, which no longer shows.
+		host.system = 'light';
+		host.settings.preferredDarkColorTheme = 'Solarized Dark'; // As if the user had changed it back themselves.
+		await run('solarized light');
+		assert.strictEqual(host.showing, 'Solarized Light');
+		assert.strictEqual(host.settings.preferredDarkColorTheme, 'Solarized Dark', 'the user’s own change stays');
+		await theme.shutdown();
+		assert.strictEqual(host.settings.preferredLightColorTheme, undefined);
+	});
+
+	test('if the system switches mode during a chat theme left in place, the next one goes where it will show', async () => {
+		host.following = true;
+		host.settings.preferredDarkColorTheme = 'Solarized Dark';
+		await run('monokai');
+		host.system = 'light'; // Monokai is still in the dark preference, but the light one shows now.
+		await run('solarized light');
+		assert.strictEqual(host.showing, 'Solarized Light', 'it shows, rather than going to the hidden dark preference');
+		assert.strictEqual(host.settings.preferredDarkColorTheme, 'Solarized Dark', 'and the dark preference is put back');
+	});
+
+	test('a record written before following the system was supported still puts back workbench.colorTheme', async () => {
+		theme.dispose();
+		host.user = 'Monokai';
+		state.values.set('caerwyn.controls.theme.record', { original: 'Solarized Dark', chatTheme: 'Monokai', until: now - 1 });
+		theme = create();
+		await settle();
+		assert.strictEqual(host.user, 'Solarized Dark');
 	});
 
 	test('a new window with chat controls paused puts the theme back', async () => {

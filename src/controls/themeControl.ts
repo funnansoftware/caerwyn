@@ -9,25 +9,36 @@ import { ChatCommandInvocation, ChatControls, CommandRejected } from './chatCont
 export type ThemeKind = 'light' | 'dark' | 'highContrast' | 'highContrastLight';
 
 export interface ThemeInfo {
-	/** What `workbench.colorTheme` is set to for this theme. */
+	/** What the theme settings, such as `workbench.colorTheme`, are set to for this theme. */
 	id: string;
 	/** The name shown in VS Code's theme picker. */
 	label: string;
 	kind: ThemeKind;
 }
 
+/**
+ * The `workbench` setting that picks the theme on screen. Normally `colorTheme`; while VS Code follows the system's
+ * light or dark mode (`window.autoDetectColorScheme`), the preferred theme for the mode the system is in.
+ */
+export const THEME_SETTINGS = ['colorTheme', 'preferredDarkColorTheme', 'preferredLightColorTheme'] as const;
+export type ThemeSetting = (typeof THEME_SETTINGS)[number];
+
 /** What the controller needs from the editor. */
 export interface ThemeHost {
 	/** Every installed color theme. */
 	themes(): ThemeInfo[];
-	/** The color theme in the user's own settings, if they set one. */
-	userTheme(): string | undefined;
-	/** The color theme in effect, whichever settings it comes from. */
-	currentTheme(): string | undefined;
-	/** Sets, or with `undefined` removes, the color theme in the user's own settings. */
-	setUserTheme(theme: string | undefined): Promise<void>;
-	/** Why changing the user's color theme would have no effect right now, if it would not. */
-	blocked(): string | undefined;
+	/** Whether VS Code follows the system's light or dark mode, showing a preferred theme for each. */
+	followsSystem(): boolean;
+	/** The kind of theme on screen. */
+	showingKind(): ThemeKind;
+	/** The setting's value in the user's own settings, if they set one. */
+	userTheme(setting: ThemeSetting): string | undefined;
+	/** The setting's value in effect, whichever settings it comes from, or its default. */
+	currentTheme(setting: ThemeSetting): string | undefined;
+	/** Sets, or with `undefined` removes, the setting in the user's own settings. */
+	setUserTheme(setting: ThemeSetting, theme: string | undefined): Promise<void>;
+	/** Why changing the setting would have no effect right now, if it would not. */
+	blocked(setting: ThemeSetting): string | undefined;
 }
 
 export interface ThemeControlConfig {
@@ -64,6 +75,8 @@ interface ChatThemeRecord {
 	until: number;
 	/** The window that set it. Only that window puts the theme back as it closes; others leave it to run its course. */
 	owner?: string;
+	/** Which setting chat changed. Absent in records from before following the system was supported: `colorTheme`. */
+	setting?: ThemeSetting;
 }
 
 const RECORD_KEY = 'caerwyn.controls.theme.record';
@@ -150,27 +163,38 @@ export class ThemeControl implements Disposable {
 	private apply(invocation: ChatCommandInvocation): Promise<string> {
 		return this.enqueue(async () => {
 			const { host, state } = this.options;
-			const blocked = host.blocked();
+			const setting = this.activeSetting();
+			const blocked = host.blocked(setting);
 			if (blocked) {
 				throw new CommandRejected(blocked);
 			}
 			const config = this.config();
-			const theme = findTheme(this.catalog(config.choices), invocation.args, host.currentTheme(), this.random);
+			const current = host.currentTheme(setting);
+			const theme = findTheme(this.catalog(config.choices), invocation.args, current, this.random);
 			if (typeof theme === 'string') {
 				throw new CommandRejected(theme);
 			}
-			if (theme.id === host.currentTheme()) {
+			if (theme.id === current) {
 				throw new CommandRejected(`${theme.label} is already showing.`);
 			}
-			const previous = this.record();
-			const userTheme = host.userTheme();
+			let previous = this.record();
+			if (previous && settingOf(previous) !== setting) {
+				// The chat theme in place is in another setting, such as after the system switched to light mode.
+				// Put that one back first, so each record only ever covers one setting.
+				await this.restore();
+				previous = this.record();
+				if (previous) {
+					throw new Error('the earlier chat theme could not be put back');
+				}
+			}
+			const userTheme = host.userTheme(setting);
 			// During a run of chat themes, what to put back is still what the user had before the first.
 			const original = previous && userTheme === previous.chatTheme ? previous.original : userTheme;
 			const until = this.now() + config.durationSeconds * 1000;
 			// Saved first, so that if the window dies straight after the change, the next one can still undo it.
-			await state.update(RECORD_KEY, { original, chatTheme: theme.id, until, owner: this.instance } satisfies ChatThemeRecord);
+			await state.update(RECORD_KEY, { original, chatTheme: theme.id, until, owner: this.instance, setting } satisfies ChatThemeRecord);
 			try {
-				await host.setUserTheme(theme.id);
+				await host.setUserTheme(setting, theme.id);
 			} catch (error) {
 				// Nothing changed: what was there before is still what must eventually be put back.
 				await state.update(RECORD_KEY, previous);
@@ -195,9 +219,10 @@ export class ThemeControl implements Disposable {
 			return;
 		}
 		const { host, state } = this.options;
-		if (host.userTheme() === record.chatTheme) {
+		const setting = settingOf(record);
+		if (host.userTheme(setting) === record.chatTheme) {
 			try {
-				await host.setUserTheme(record.original);
+				await host.setUserTheme(setting, record.original);
 				this.options.log(`Chat theme ended: back to ${record.original ?? 'the default theme'}.`);
 			} catch (error) {
 				this.options.log(`Could not put the color theme back, trying again shortly: ${error instanceof Error ? error.message : String(error)}`);
@@ -232,6 +257,36 @@ export class ThemeControl implements Disposable {
 			() => undefined,
 		);
 		return result;
+	}
+
+	/**
+	 * The setting that decides the theme on screen. While following the system, VS Code does not say which mode the
+	 * system is in, so it is worked out from the kind of theme showing. A chat theme already in place answers it
+	 * instead: chat may have put a light theme in the dark setting.
+	 */
+	private activeSetting(): ThemeSetting {
+		const { host } = this.options;
+		if (!host.followsSystem()) {
+			return 'colorTheme';
+		}
+		const showing = host.showingKind();
+		const kinds = new Map(host.themes().map((theme) => [theme.id, theme.kind]));
+		const record = this.record();
+		// Unless the system has since switched mode, and the chat theme is no longer the one showing.
+		if (
+			record &&
+			settingOf(record) !== 'colorTheme' &&
+			host.userTheme(settingOf(record)) === record.chatTheme &&
+			kinds.get(record.chatTheme) === showing
+		) {
+			return settingOf(record);
+		}
+		const darkMatches = kinds.get(host.currentTheme('preferredDarkColorTheme') ?? '') === showing;
+		const lightMatches = kinds.get(host.currentTheme('preferredLightColorTheme') ?? '') === showing;
+		if (darkMatches !== lightMatches) {
+			return darkMatches ? 'preferredDarkColorTheme' : 'preferredLightColorTheme';
+		}
+		return showing === 'light' || showing === 'highContrastLight' ? 'preferredLightColorTheme' : 'preferredDarkColorTheme';
 	}
 
 	private record(): ChatThemeRecord | undefined {
@@ -319,6 +374,10 @@ export function formatDuration(seconds: number): string {
 		return `${rest} s`;
 	}
 	return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+}
+
+function settingOf(record: ChatThemeRecord): ThemeSetting {
+	return record.setting && THEME_SETTINGS.includes(record.setting) ? record.setting : 'colorTheme';
 }
 
 function normalize(name: string): string {

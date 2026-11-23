@@ -13,4 +13,5 @@ All notable changes to the "caerwyn" extension will be documented in this file.
 - Chat controls, off by default: the groundwork for letting your own chat run commands that change the editor, with per-command permissions and cooldowns, a delay that lets moderators cancel a command, and a pause switch in the status bar.
 - `!theme <name>`: your chat can switch the color theme for a few minutes, after which yours comes back.
 - The chat shows what became of each chat command under its message, and Caerwyn tells you when a viewer uses one while chat controls are off.
+- `!theme` works while VS Code follows the system's light or dark mode, by changing the preferred theme for the mode in use.
 - Initial scaffold
