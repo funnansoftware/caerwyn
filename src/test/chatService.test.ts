@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ChatService, PlatformAuth, StateStore } from '../chat/chatService';
-import { ChatEvent, ChatMessage, ChatSink, NotSignedInError, TWITCH_SELF, ViewerCounts, YOUTUBE_SELF } from '../chat/types';
+import { ChatEvent, ChatMessage, ChatSink, NotSignedInError, TWITCH_SELF, ViewerCounts, YOUTUBE_SELF, twitchChannelSource } from '../chat/types';
 import { delay, waitFor } from './helpers';
 
 class MemoryState implements StateStore {
@@ -89,6 +89,15 @@ suite('ChatService', () => {
 		await waitFor(() => batches.length > 0, 'a batch');
 		assert.strictEqual(batches.length, 1);
 		assert.strictEqual(batches[0].length, 4, 'the duplicate is not forwarded');
+	});
+
+	test('replies only in the user’s own chat', async () => {
+		await service.addSource(twitchChannelSource('someone_else'));
+		await service.addSource(TWITCH_SELF);
+		const other = { ...message('x'), sourceId: 'twitch:someone_else' };
+		await assert.rejects(service.reply(other, 'hi'), /only sent in your own chat/);
+		await assert.rejects(service.reply({ ...message('y'), sourceId: 'twitch:unknown' }, 'hi'), /no longer connected/);
+		await assert.rejects(service.reply(message('z'), 'hi'), /only sent in Twitch chat/, 'not connected, as no chat view is open');
 	});
 
 	test('keeps chat command feedback for messages it still holds, and forgets it with them', () => {

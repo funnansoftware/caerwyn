@@ -117,7 +117,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 suite('findTheme', () => {
 	const pick = (query: string, current?: string, random = () => 0) => {
 		const result = findTheme(THEMES, query, current, random);
-		return typeof result === 'string' ? result : result.id;
+		return 'problem' in result ? result.problem : result.id;
 	};
 
 	test('matches names ignoring case, spaces and punctuation, exact first', () => {
@@ -133,7 +133,38 @@ suite('findTheme', () => {
 		assert.match(pick('nope'), /No theme is called "nope"/);
 		assert.match(pick('!!!'), /No theme is called/);
 		assert.match(pick('   '), /Say which theme/);
+	});
+
+	test('what it would say in chat never repeats what the viewer typed', () => {
+		const marker = 'zz-marker-zz';
+		for (const query of [marker, `solarized ${marker}`, `!!!${marker}`]) {
+			const result = findTheme(THEMES, query, undefined, () => 0);
+			assert.ok('problem' in result, query);
+			assert.ok(!result.chat.includes(marker), `chat text for "${query}": ${result.chat}`);
+			assert.ok(result.problem.includes(marker), 'the chat view may quote it');
+		}
+		const ambiguous = findTheme(THEMES, 'solarized', undefined, () => 0);
+		assert.ok('problem' in ambiguous && /That could be 2 themes: Solarized Dark, Solarized Light/.test(ambiguous.chat));
 		assert.ok(pick('x'.repeat(200)).length < 120, 'a long name is cut short');
+	});
+
+	test('a short name wins over every name, and only as typed in full', () => {
+		const monokai = THEMES.find((theme) => theme.id === 'Monokai');
+		const light = THEMES.find((theme) => theme.id === 'Solarized Light');
+		assert.ok(monokai && light);
+		const codes = new Map([
+			['kai', monokai],
+			['dark', light], // Even a short name that is also a theme's name.
+			['zqx', monokai],
+		]);
+		const find = (query: string) => {
+			const result = findTheme(THEMES, query, undefined, () => 0, codes);
+			return 'problem' in result ? result.problem : result.id;
+		};
+		assert.strictEqual(find('KAI'), 'Monokai');
+		assert.strictEqual(find('dark'), 'Solarized Light');
+		assert.match(find('zq'), /No theme is called/, 'no partial short names');
+		assert.strictEqual(find('monokai dimmed'), 'Monokai Dimmed', 'names still work');
 	});
 
 	test('durations read naturally', () => {
@@ -222,7 +253,7 @@ suite('ThemeControl', () => {
 
 	test('sets the theme in user settings, then puts the user’s back when time is up', async () => {
 		host.user = 'Solarized Dark';
-		assert.strictEqual(await run('monokai'), 'Monokai for 5 min', 'says what it did, for the chat view');
+		assert.deepStrictEqual(await run('monokai'), { summary: 'Monokai for 5 min', confirmation: 'Monokai for 5 min.' }, 'says what it did');
 		assert.strictEqual(host.user, 'Monokai');
 		assert.deepStrictEqual({ ...record(), owner: undefined }, {
 			original: 'Solarized Dark',
@@ -446,6 +477,61 @@ suite('ThemeControl', () => {
 		theme = create();
 		await settle();
 		assert.strictEqual(host.user, 'Solarized Dark');
+	});
+
+	test('turns down requests with text safe for chat, and explains itself for !help', async () => {
+		const marker = 'zz-marker-zz';
+		const command = controls.registered.find((entry) => entry.name === 'theme');
+		for (const args of [marker, '', 'solarized', 'dark 2026']) {
+			await assert.rejects(run(args), (error: CommandRejected) => {
+				assert.ok(error.chatText, `chat text for "${args}"`);
+				assert.ok(!error.chatText.includes(marker));
+				return true;
+			});
+		}
+		host.blockedBy = `workspace ${marker}`;
+		await assert.rejects(run('monokai'), (error: CommandRejected) => error.chatText === 'The theme cannot be changed right now.');
+		host.blockedBy = undefined;
+
+		assert.strictEqual(command?.usage, '!theme <name>');
+		const help = command?.help?.() ?? '';
+		// `random` is always 0 in these tests, so the examples are the first themes left each time.
+		assert.strictEqual(
+			help,
+			'!theme <name> switches the color theme for 5 min. Try Dark 2026, Light 2026, Monokai or Monokai Dimmed, or !theme random. 7 themes to pick from.',
+		);
+		assert.ok(!help.includes('High Contrast'), 'only the themes random would pick');
+		themeConfig.choices = ['Monokai', 'Solarized Light'];
+		assert.strictEqual(command?.help?.(), '!theme <name> switches the color theme for 5 min. Pick from: Monokai, Solarized Light, or !theme random.');
+	});
+
+	test('short names in choices: chat types them, !help lists them, and the rest of choices still holds', async () => {
+		themeConfig.choices = { kai: 'Monokai', SOL: 'solarized light', dim: 'Monokai Dimmed' };
+		assert.deepStrictEqual(await run('kai'), { summary: 'Monokai for 5 min', confirmation: 'Monokai for 5 min.' });
+		await run('sol');
+		assert.strictEqual(host.user, 'Solarized Light', 'short names ignore case');
+		await run('monokai dimmed');
+		assert.strictEqual(host.user, 'Monokai Dimmed', 'full names still work');
+		await assert.rejects(run('dark 2026'), /No theme is called/, 'only the themes in choices');
+
+		const command = controls.registered.find((entry) => entry.name === 'theme');
+		assert.strictEqual(command?.help?.(), '!theme <name> switches the color theme for 5 min. Pick from: kai, sol, dim, or !theme random.');
+	});
+
+	test('short names that cannot work are left out and logged once; none usable never means every theme', async () => {
+		themeConfig.choices = { kai: 'Monokai', random: 'Solarized Light', 'two words': 'Solarized Dark', gone: 'Not Installed', bad: 3 as never };
+		await run('kai');
+		await run('kai').catch(() => undefined); // Already showing; reads the settings again.
+		for (const problem of [/"random" cannot be a short name/, /"two words" cannot be a short name/, /no installed theme is called "Not Installed"/, /"bad" must name a theme/]) {
+			assert.strictEqual(logs.filter((line) => problem.test(line)).length, 1, String(problem));
+		}
+		await assert.rejects(run('random'), /There is no other theme/, 'random only picks from the usable choices, here only Monokai');
+
+		themeConfig.choices = { random: 'Monokai', gone: 'Not Installed' };
+		await assert.rejects(run('solarized light'), /None of the themes/);
+		themeConfig.choices = {};
+		await run('solarized light');
+		assert.strictEqual(host.user, 'Solarized Light', 'an empty map, like an empty list, allows every theme');
 	});
 
 	test('a new window with chat controls paused puts the theme back', async () => {

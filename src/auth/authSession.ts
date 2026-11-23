@@ -19,7 +19,8 @@ export interface AuthSessionOptions {
 	storageKey: string;
 	secrets: SecretStore;
 	oauth: OAuthClient;
-	scopes: string[];
+	/** The permissions to ask for. A function when they depend on settings: it is read at each sign-in. */
+	scopes: string[] | (() => string[]);
 	/** Looks up who a new access token belongs to. */
 	identify(accessToken: string, creds: AppCredentials): Promise<Account>;
 	/** Asks the platform whether a token is still good. Omit when the platform has no such requirement. */
@@ -49,7 +50,13 @@ export class AuthSession implements ChatAuth {
 	}
 
 	get scopes(): string[] {
-		return this.options.scopes;
+		const { scopes } = this.options;
+		return typeof scopes === 'function' ? scopes() : scopes;
+	}
+
+	/** The permissions the current sign-in was granted, or `undefined` when signed out. */
+	async grantedScopes(): Promise<string[] | undefined> {
+		return (await this.read<StoredSession>('session'))?.tokens.scopes;
 	}
 
 	get oauth(): OAuthClient {
@@ -168,7 +175,12 @@ export class AuthSession implements ChatAuth {
 		// Persist before use: a rotated refresh token that is lost cannot be recovered.
 		await this.write({
 			account: stored.account,
-			tokens: { ...tokens, refreshToken: tokens.refreshToken ?? stored.tokens.refreshToken },
+			tokens: {
+				...tokens,
+				refreshToken: tokens.refreshToken ?? stored.tokens.refreshToken,
+				// A refresh keeps the permissions granted; if the response does not list them, the old list still holds.
+				scopes: tokens.scopes.length > 0 ? tokens.scopes : stored.tokens.scopes,
+			},
 		});
 		return tokens.accessToken;
 	}

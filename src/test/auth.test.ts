@@ -214,6 +214,30 @@ suite('AuthSession', () => {
 		assert.strictEqual(JSON.parse(secrets.values.get('test.session') ?? '{}').tokens.refreshToken, 'rt1');
 	});
 
+	test('knows the permissions granted, and keeps them across a refresh that does not list them', async () => {
+		const { session } = setup(async () => ({ ...fresh('at2'), scopes: [] }));
+		await session.setCredentials({ clientId: 'cid' });
+		assert.strictEqual(await session.grantedScopes(), undefined, 'none while signed out');
+		await session.completeSignIn({ ...expired('at1', 'rt1'), scopes: ['user:read:chat', 'user:write:chat'] });
+		assert.strictEqual(await session.getAccessToken(), 'at2');
+		assert.deepStrictEqual(await session.grantedScopes(), ['user:read:chat', 'user:write:chat']);
+	});
+
+	test('reads the permissions to ask for at each sign-in, when they depend on settings', () => {
+		let replies = false;
+		const session = new AuthSession({
+			storageKey: 'test',
+			secrets: new MemorySecrets(),
+			oauth: {} as OAuthClient,
+			scopes: () => (replies ? ['read', 'write'] : ['read']),
+			identify: async () => ({ id: '1', label: 'me' }),
+			log: () => undefined,
+		});
+		assert.deepStrictEqual(session.scopes, ['read']);
+		replies = true;
+		assert.deepStrictEqual(session.scopes, ['read', 'write']);
+	});
+
 	test('retries an API call once with a refreshed token after a 401', async () => {
 		const { session, apiCalls } = setup(
 			async () => fresh('at2', 'rt2'),

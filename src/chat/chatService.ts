@@ -266,6 +266,32 @@ export class ChatService {
 		return true;
 	}
 
+	/**
+	 * Sends `text` in the chat `message` came from, as a reply to it, from the signed-in account. Only Twitch takes
+	 * replies for now; simulated Twitch chat shows them as the real one would.
+	 */
+	async reply(message: ChatMessage, text: string): Promise<void> {
+		const source = this.allSources.find((candidate) => candidate.id === message.sourceId);
+		if (!source) {
+			throw new Error('That chat is no longer connected.');
+		}
+		if (source.kind === 'simulated') {
+			if (!this.simulation) {
+				throw new Error('Simulated chat is not running.');
+			}
+			this.simulation.reply(message, text);
+			return;
+		}
+		if (source.kind !== 'self') {
+			// It speaks from the user's account: only in their own chat, never one they only read.
+			throw new Error('Replies are only sent in your own chat.');
+		}
+		if (source.platform !== 'twitch' || !this.twitch) {
+			throw new Error('Replies are only sent in Twitch chat.');
+		}
+		await this.twitch.sendMessage(message.channelId, text, message.id);
+	}
+
 	/** Whether a source is the user's own chat (their channel or broadcast, or simulated chat), not one they only read. */
 	isOwnSource(sourceId: string): boolean {
 		return this.allSources.some((source) => source.id === sourceId && (source.kind === 'self' || source.kind === 'simulated'));

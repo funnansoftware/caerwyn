@@ -171,6 +171,24 @@ suite('SimulatedChat', () => {
 		chat.dispose();
 	});
 
+	test('replies from the broadcaster, as a Twitch reply; YouTube takes none', () => {
+		const { sink, chat } = simulator();
+		chat.say('twitch', 'viewer', '!help');
+		const [parent] = messages(sink.events);
+		sink.events.length = 0;
+		chat.reply(parent, '🤖 Chat commands: !theme <name>.');
+		const [reply] = messages(sink.events);
+		assert.strictEqual(reply.author.id, 'sim-t0');
+		assert.ok(reply.author.roles.includes('broadcaster'));
+		assert.deepStrictEqual(reply.replyTo, { name: parent.author.name, text: '!help' });
+		assert.strictEqual(reply.fragments.map((f) => f.text).join(''), '🤖 Chat commands: !theme <name>.');
+
+		chat.say('youtube', 'viewer', '!help');
+		const youtube = messages(sink.events).at(-1);
+		assert.ok(youtube);
+		assert.throws(() => chat.reply(youtube, 'x'), /only sent in Twitch chat/);
+	});
+
 	test('sends typed text from a chatter of the requested standing', () => {
 		const { sink, chat } = simulator();
 		const expected: Record<SimulatedSpeaker, Role | undefined> = { viewer: undefined, subscriber: 'subscriber', vip: 'vip', moderator: 'moderator', broadcaster: 'broadcaster' };

@@ -67,6 +67,40 @@ suite('Extension', () => {
 		await vscode.commands.executeCommand('workbench.action.closeSidebar');
 	});
 
+	test('with replies on, Caerwyn answers !help and a refused command in simulated chat, without repeating the viewer', async () => {
+		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as {
+			chatMessages(): readonly { author: { id: string }; fragments: { text: string }[] }[];
+		};
+		const caerwyn = () => vscode.workspace.getConfiguration('caerwyn');
+		const replies = () =>
+			api
+				.chatMessages()
+				.map((message) => message.fragments.map((fragment) => fragment.text).join(''))
+				.filter((text) => text.startsWith('🤖'));
+		const before = replies().length;
+		try {
+			await caerwyn().update('controls.enabled', true, vscode.ConfigurationTarget.Global);
+			await caerwyn().update('controls.replies', 'problems', vscode.ConfigurationTarget.Global);
+			await caerwyn().update('simulation.messagesPerSecond', 0, vscode.ConfigurationTarget.Global);
+
+			await vscode.commands.executeCommand('caerwyn.simulateChatCommand', '!help', 'twitch', 'viewer');
+			await waitFor(() => replies().length > before, 'the answer to !help', 10000);
+			assert.match(replies().at(-1) ?? '', /^🤖 \(caerwyn\) Chat commands: .*!theme <name>.*!help <command>\.$/);
+
+			await vscode.commands.executeCommand('caerwyn.simulateChatCommand', '!theme zz-marker-zz', 'twitch', 'moderator');
+			await waitFor(() => replies().length > before + 1, 'the reply to a theme that does not exist', 10000);
+			assert.strictEqual(replies().at(-1), '🤖 (caerwyn) There is no theme by that name. Try !help theme.');
+			assert.ok(!replies().some((text) => text.includes('zz-marker-zz')));
+		} finally {
+			await caerwyn().update('controls.enabled', undefined, vscode.ConfigurationTarget.Global);
+			await caerwyn().update('controls.replies', undefined, vscode.ConfigurationTarget.Global);
+			await caerwyn().update('simulation.messagesPerSecond', undefined, vscode.ConfigurationTarget.Global);
+			await resetSimulation();
+			await vscode.window.tabGroups.close(chatTabs());
+			await waitFor(() => chatTabs().length === 0, 'the chat tab to close');
+		}
+	});
+
 	test('a simulated chat command runs through chat controls, and pausing stops the next one', async () => {
 		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as {
 			registerChatCommand(command: ChatCommand): vscode.Disposable;

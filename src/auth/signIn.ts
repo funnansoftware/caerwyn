@@ -51,7 +51,9 @@ export async function signIn(platform: SignInPlatform): Promise<boolean> {
 			await auth.setCredentials(creds);
 		}
 
-		const device = await auth.oauth.requestDeviceCode(creds, auth.scopes);
+		// Read once: the permissions can depend on settings, which must not change between the two requests.
+		const scopes = auth.scopes;
+		const device = await auth.oauth.requestDeviceCode(creds, scopes);
 
 		// The code is never shown unless asked for, so it cannot leak onto a stream by accident.
 		if (platform.codeEntry) {
@@ -79,7 +81,7 @@ export async function signIn(platform: SignInPlatform): Promise<boolean> {
 			(_progress, cancellation) => {
 				const abort = new AbortController();
 				cancellation.onCancellationRequested(() => abort.abort(new vscode.CancellationError()));
-				return awaitDeviceAuthorization(auth.oauth, creds, device, auth.scopes, abort.signal);
+				return awaitDeviceAuthorization(auth.oauth, creds, device, scopes, abort.signal);
 			},
 		);
 		const account = await auth.completeSignIn(tokens);

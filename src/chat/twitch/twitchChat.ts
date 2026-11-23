@@ -458,6 +458,57 @@ export class TwitchChat {
 		}
 	}
 
+	/**
+	 * Sends a chat message as the signed-in user, as a reply when `replyTo` is a message ID. Needs the
+	 * `user:write:chat` permission. Throws with the reason when Twitch does not send it, including when it accepts
+	 * the request but drops the message (AutoMod, slow mode and so on).
+	 */
+	async sendMessage(broadcasterId: string, text: string, replyTo?: string): Promise<void> {
+		const body: Record<string, string> = { broadcaster_id: broadcasterId, sender_id: this.userId, message: text };
+		if (replyTo) {
+			body.reply_parent_message_id = replyTo;
+		}
+		if (!this.userId) {
+			throw new Error('Twitch chat is not connected yet.');
+		}
+		let res: Response;
+		try {
+			res = await this.options.auth.fetch(`${this.helixUrl}/chat/messages`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			});
+		} catch (err) {
+			if (err instanceof NotSignedInError) {
+				throw new Error('Sign in to Twitch again to send chat messages.');
+			}
+			throw new Error(`Could not reach Twitch: ${errorText(err)}`);
+		}
+		const reply = (await res.json().catch(() => ({}))) as {
+			message?: string;
+			data?: { is_sent?: boolean; drop_reason?: { code?: string; message?: string } | null }[];
+		};
+		if (!res.ok) {
+			switch (res.status) {
+				case 401:
+					throw new Error(`Twitch refused the message (${reply.message ?? 'not authorised'}). Sign in to Twitch again.`);
+				case 403:
+					throw new Error('Twitch does not let this account chat in that channel.');
+				case 422:
+					throw new Error('Twitch says the message is too long.');
+				case 429:
+					throw new Error('Twitch says too many messages were sent; try again shortly.');
+				default:
+					throw new Error(`Twitch: ${reply.message ?? `HTTP ${res.status}`}`);
+			}
+		}
+		const result = reply.data?.[0];
+		if (result?.is_sent !== true) {
+			const reason = result?.drop_reason;
+			throw new Error(`Twitch did not send the message: ${reason?.message ?? reason?.code ?? 'no reason given'}`);
+		}
+	}
+
 	/** Creates one subscription. Returns `undefined` on success, or Twitch's refusal when retrying will not help. */
 	private async subscribe(
 		type: string,

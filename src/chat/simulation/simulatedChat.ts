@@ -302,6 +302,19 @@ export class SimulatedChat {
 		this.youtubeItem(chatter, { type: 'textMessageEvent', displayMessage: text });
 	}
 
+	/**
+	 * Sends a reply from the broadcaster, as Caerwyn's chat replies would arrive from Twitch. Like the real thing, only
+	 * Twitch chat takes replies.
+	 */
+	reply(parent: ChatMessage, text: string): void {
+		if (parent.platform !== 'twitch') {
+			throw new Error('Replies are only sent in Twitch chat.');
+		}
+		this.twitchChat(TWITCH_BROADCASTER, text, {
+			reply: { parent_user_name: parent.author.name, parent_message_body: parent.fragments.map((fragment) => fragment.text).join('') },
+		});
+	}
+
 	/** A chatter from `free` that matches, else any that matches, else anyone free. */
 	private pickMatching<T>(free: readonly T[], all: readonly T[], matches: (chatter: T) => boolean): T {
 		const candidates = free.filter(matches);

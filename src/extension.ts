@@ -18,7 +18,9 @@ import { Account, Platform, RealSource, TWITCH_SELF, YOUTUBE_SELF, twitchChannel
 import { parseVideoId } from './chat/youtube/videoId';
 import { YouTubeTransport } from './chat/youtube/youtubeChat';
 import { ChatCommand, ChatControls, CommandSettings, describeReport, parseCommandText } from './controls/chatControls';
+import { ChatReplies } from './controls/chatReplies';
 import { ControlsStatusBar } from './controls/controlsStatusBar';
+import { registerHelp } from './controls/helpCommand';
 import { DEFAULT_THEME_SECONDS, ThemeControl } from './controls/themeControl';
 import { vscodeThemeHost } from './controls/vscodeThemeHost';
 import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
@@ -29,6 +31,8 @@ import { ChatWebview } from './panel/chatWebview';
 // viewers spend, and `moderator:manage:automod` shows the messages AutoMod holds and lets the user allow or deny
 // them, the only thing Caerwyn changes on Twitch. Other moderation will need broader scopes, and signing in again.
 const TWITCH_SCOPES = ['user:read:chat', 'channel:read:redemptions', 'bits:read', 'moderator:manage:automod'];
+/** Sending chat messages, for chat command replies. Asked for only while replies are switched on. */
+const TWITCH_REPLY_SCOPE = 'user:write:chat';
 const YOUTUBE_SCOPES = ['https://www.googleapis.com/auth/youtube.readonly'];
 const TWITCH_LOGIN = /^[A-Za-z0-9_]{1,25}$/;
 
@@ -65,6 +69,12 @@ function parseTwitchLogin(input: string): string | undefined {
 /** Kept so `deactivate` can put the user's color theme back before the window goes. */
 let themeControl: ThemeControl | undefined;
 
+/** Whether chat command replies are switched on. Only the exact values that switch them on count. */
+function repliesOn(): boolean {
+	const mode = vscode.workspace.getConfiguration('caerwyn.controls').get<unknown>('replies');
+	return mode === 'problems' || mode === 'all';
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	const output = vscode.window.createOutputChannel('Caerwyn', { log: true });
 	const log = (message: string) => output.info(message);
@@ -73,7 +83,8 @@ export function activate(context: vscode.ExtensionContext) {
 		storageKey: 'caerwyn.twitch',
 		secrets: context.secrets,
 		oauth: new TwitchOAuth(),
-		scopes: TWITCH_SCOPES,
+		// Sending messages is asked for only when the user has switched replies on, so a sign-in never grants more.
+		scopes: () => (repliesOn() ? [...TWITCH_SCOPES, TWITCH_REPLY_SCOPE] : TWITCH_SCOPES),
 		identify: identifyTwitch,
 		validate: async (token) => (await validateTwitchToken(token)) !== undefined,
 		apiHeaders: (creds) => ({ 'Client-Id': creds.clientId }),
@@ -145,6 +156,40 @@ export function activate(context: vscode.ExtensionContext) {
 	// Every view shows what became of each command under its message, so the user can tell why one did nothing.
 	const showFeedback = controls.onReport((report) => service.setFeedback(report.message.key, describeReport(report)));
 
+	// Replies need a permission an older sign-in did not ask for. Asked about once, until the sign-in changes.
+	let replySignInAsked = false;
+	const askReplySignIn = async (force = false) => {
+		if (replySignInAsked && !force) {
+			return;
+		}
+		replySignInAsked = true;
+		const answer = await vscode.window.showInformationMessage(
+			'To reply to viewers, Caerwyn needs permission to send messages in your Twitch chat. Sign in to Twitch again to grant it.',
+			'Sign In Again',
+		);
+		if (answer === 'Sign In Again') {
+			await vscode.commands.executeCommand('caerwyn.signInTwitch');
+		}
+	};
+	const hasReplyPermission = async () => (await twitchAuth.grantedScopes())?.includes(TWITCH_REPLY_SCOPE) === true;
+	const replies = new ChatReplies({
+		onReport: controls.onReport,
+		getMode: () => vscode.workspace.getConfiguration('caerwyn.controls').get<unknown>('replies'),
+		readiness: async (message) => {
+			if (message.platform !== 'twitch') {
+				return 'unsupported';
+			}
+			if (SIMULATED_SOURCES.some((source) => source.id === message.sourceId)) {
+				return 'ready';
+			}
+			// Checked here rather than learned from a refused request, which would cost a token refresh every time.
+			return (await hasReplyPermission()) ? 'ready' : 'needsSignIn';
+		},
+		send: (message, text) => service.reply(message, text),
+		onNeedsSignIn: () => void askReplySignIn(),
+		log,
+	});
+
 	themeControl = new ThemeControl({
 		controls,
 		host: vscodeThemeHost(),
@@ -153,7 +198,8 @@ export function activate(context: vscode.ExtensionContext) {
 			const config = vscode.workspace.getConfiguration('caerwyn.controls.theme');
 			return {
 				durationSeconds: config.get<number>('durationSeconds', DEFAULT_THEME_SECONDS),
-				choices: config.get<string[]>('choices', []),
+				// Checked by the theme control: a list of names, or short names mapped to names.
+				choices: config.get<string[] | Record<string, string>>('choices', []),
 			};
 		},
 		log,
@@ -368,6 +414,8 @@ export function activate(context: vscode.ExtensionContext) {
 		output,
 		// Before the service, so no command waiting out its delay runs once chat is gone.
 		new ControlsStatusBar(controls, service),
+		replies,
+		registerHelp(controls),
 		showFeedback,
 		noticeOff,
 		themeControl,
@@ -402,6 +450,17 @@ export function activate(context: vscode.ExtensionContext) {
 			if (event.affectsConfiguration('caerwyn.controls')) {
 				controls.refreshConfig();
 			}
+			if (event.affectsConfiguration('caerwyn.controls.replies') && repliesOn()) {
+				void (async () => {
+					// Switching replies on is the moment to ask, rather than when the first viewer is left unanswered.
+					if ((await twitchAuth.getAccount()) && !(await hasReplyPermission())) {
+						await askReplySignIn(true);
+					}
+				})();
+			}
+		}),
+		twitchAuth.onDidChange(() => {
+			replySignInAsked = false;
 		}),
 		// Lets VS Code restore the chat tab, and the layout it was part of, after a restart.
 		vscode.window.registerWebviewPanelSerializer(CHAT_VIEW_TYPE, {
@@ -414,6 +473,7 @@ export function activate(context: vscode.ExtensionContext) {
 		chatViewReadyCount: () => ChatWebview.readyCount,
 		registerChatCommand: (command: ChatCommand) => controls.register(command),
 		chatControlsPaused: () => controls.paused,
+		chatMessages: () => service.messages,
 	};
 }
 

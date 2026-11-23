@@ -1,6 +1,6 @@
 import type { StateStore } from '../chat/chatService';
 import { Disposable } from '../util/emitter';
-import { ChatCommandInvocation, ChatControls, CommandRejected } from './chatControls';
+import { ChatCommandInvocation, ChatControls, CommandRejected, CommandResult } from './chatControls';
 
 // `!theme <name>`: a viewer switches the editor's color theme for a while, after which it goes back.
 // What the user had is kept in the state store, not in memory, so that a crash or a second window still puts
@@ -44,8 +44,24 @@ export interface ThemeHost {
 export interface ThemeControlConfig {
 	/** How long a viewer's theme stays before the user's comes back. */
 	durationSeconds: number;
-	/** Themes chat may pick, by name or ID. Empty allows every installed theme. */
-	choices: string[];
+	/**
+	 * Themes chat may pick: a list of names or IDs, or short names mapped to them, such as `{ "kai": "Monokai" }`.
+	 * Empty allows every installed theme.
+	 */
+	choices: string[] | Record<string, string>;
+}
+
+/** One theme chat may pick, from `choices`, with the short name the user gave it, if any. */
+interface ThemeChoice {
+	name: string;
+	code?: string;
+}
+
+/** What chat may pick from: the themes, and short names for some of them. */
+interface Catalog {
+	themes: ThemeInfo[];
+	/** By short name, in the order the user listed them. */
+	codes: Map<string, ThemeInfo>;
 }
 
 export interface Timers {
@@ -86,6 +102,9 @@ const MAX_THEME_SECONDS = 3600;
 /** How soon to try again when putting the user's theme back fails, such as while settings.json has unsaved edits. */
 const RETRY_MS = 30_000;
 const MAX_QUERY = 60;
+/** Past this, `!help theme` gives examples rather than every choice. Twitch allows 500 characters. */
+const HELP_LENGTH = 300;
+const HELP_EXAMPLES = 4;
 
 const defaultTimers: Timers = {
 	set: (callback, ms) => setTimeout(callback, ms),
@@ -101,6 +120,8 @@ export class ThemeControl implements Disposable {
 	/** Changes to the theme happen one at a time, in order. */
 	private queue: Promise<void> = Promise.resolve();
 	private disposed = false;
+	/** Settings problems already logged. */
+	private readonly warned = new Set<string>();
 	private readonly instance = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 	constructor(private readonly options: ThemeControlOptions) {
@@ -111,6 +132,8 @@ export class ThemeControl implements Disposable {
 			options.controls.register({
 				name: 'theme',
 				description: 'switches the color theme for a few minutes: `!theme monokai`, or `!theme random`.',
+				usage: '!theme <name>',
+				help: () => this.help(),
 				defaults: { allowed: 'everyone', cooldownSeconds: 60, userCooldownSeconds: 300 },
 				run: (invocation) => this.apply(invocation),
 			}),
@@ -144,6 +167,42 @@ export class ThemeControl implements Disposable {
 		}
 	}
 
+	/**
+	 * What `!help theme` says. Chat is plain text, so it stays short: every theme in `choices` when they fit, or
+	 * else a few examples picked at random and how many there are.
+	 */
+	private help(): string {
+		const config = this.config();
+		const intro = `!theme <name> switches the color theme for ${formatDuration(config.durationSeconds)}.`;
+		let catalog: Catalog;
+		try {
+			catalog = this.catalog(config.choices);
+		} catch {
+			return `${intro} Try !theme random.`;
+		}
+		// Short names when the user gave them: they are what chat is meant to type, and they keep this short.
+		const labels =
+			catalog.codes.size > 0
+				? [...catalog.codes.keys()]
+				: [...new Set(catalog.themes.filter((theme) => theme.kind === 'light' || theme.kind === 'dark').map((theme) => theme.label))];
+		if (labels.length === 0) {
+			return `${intro} Try !theme random.`;
+		}
+		if (hasChoices(config.choices)) {
+			const all = `${intro} Pick from: ${labels.join(', ')}, or !theme random.`;
+			if (all.length <= HELP_LENGTH) {
+				return all;
+			}
+		}
+		const pool = [...labels];
+		const examples: string[] = [];
+		while (examples.length < HELP_EXAMPLES && pool.length > 0) {
+			examples.push(pool.splice(Math.floor(this.random() * pool.length), 1)[0]);
+		}
+		const list = examples.length > 1 ? `${examples.slice(0, -1).join(', ')} or ${examples.at(-1)}` : examples[0];
+		return `${intro} Try ${list}, or !theme random. ${labels.length} themes to pick from.`;
+	}
+
 	/** Picks up a theme chat set before this window started: one from another window, or from before a crash. */
 	private resume(): Promise<void> {
 		return this.enqueue(async () => {
@@ -160,22 +219,23 @@ export class ThemeControl implements Disposable {
 	}
 
 	/** Returns what it did, such as "Monokai for 5 min", to show under the viewer's message. */
-	private apply(invocation: ChatCommandInvocation): Promise<string> {
+	private apply(invocation: ChatCommandInvocation): Promise<CommandResult> {
 		return this.enqueue(async () => {
 			const { host, state } = this.options;
 			const setting = this.activeSetting();
 			const blocked = host.blocked(setting);
 			if (blocked) {
-				throw new CommandRejected(blocked);
+				throw new CommandRejected(blocked, 'The theme cannot be changed right now.');
 			}
 			const config = this.config();
 			const current = host.currentTheme(setting);
-			const theme = findTheme(this.catalog(config.choices), invocation.args, current, this.random);
-			if (typeof theme === 'string') {
-				throw new CommandRejected(theme);
+			const catalog = this.catalog(config.choices);
+			const theme = findTheme(catalog.themes, invocation.args, current, this.random, catalog.codes);
+			if ('problem' in theme) {
+				throw new CommandRejected(theme.problem, theme.chat);
 			}
 			if (theme.id === current) {
-				throw new CommandRejected(`${theme.label} is already showing.`);
+				throw new CommandRejected(`${theme.label} is already showing.`, `${theme.label} is already showing.`);
 			}
 			let previous = this.record();
 			if (previous && settingOf(previous) !== setting) {
@@ -202,7 +262,8 @@ export class ThemeControl implements Disposable {
 			}
 			this.options.log(`Chat theme: ${theme.label} for ${config.durationSeconds}s, from ${invocation.message.author.name}.`);
 			this.schedule(until - this.now());
-			return `${theme.label} for ${formatDuration(config.durationSeconds)}`;
+			const summary = `${theme.label} for ${formatDuration(config.durationSeconds)}`;
+			return { summary, confirmation: `${summary}.` };
 		});
 	}
 
@@ -294,33 +355,63 @@ export class ThemeControl implements Disposable {
 		return value && typeof value.chatTheme === 'string' && typeof value.until === 'number' ? value : undefined;
 	}
 
-	/** The installed themes chat may pick. */
-	private catalog(choices: string[]): ThemeInfo[] {
+	/** The installed themes chat may pick, and short names for them. */
+	private catalog(raw: ThemeControlConfig['choices']): Catalog {
 		const installed = this.options.host.themes();
-		if (choices.length === 0) {
-			return installed;
+		if (!hasChoices(raw)) {
+			return { themes: installed, codes: new Map() };
 		}
-		const wanted = new Set(choices.map(normalize));
-		const allowed = installed.filter((theme) => wanted.has(normalize(theme.id)) || wanted.has(normalize(theme.label)));
-		if (allowed.length === 0) {
-			throw new CommandRejected('None of the themes in caerwyn.controls.theme.choices are installed.');
+		// From here on, a list that came out empty must not fall back to every installed theme.
+		const choices = toChoices(raw, (problem) => this.warn(problem));
+		const themes: ThemeInfo[] = [];
+		const codes = new Map<string, ThemeInfo>();
+		for (const choice of choices) {
+			const wanted = normalize(choice.name);
+			const theme = installed.find((candidate) => normalize(candidate.id) === wanted || normalize(candidate.label) === wanted);
+			if (!theme) {
+				this.warn(`caerwyn.controls.theme.choices: no installed theme is called "${choice.name}".`);
+				continue;
+			}
+			if (!themes.includes(theme)) {
+				themes.push(theme);
+			}
+			if (choice.code) {
+				codes.set(choice.code, theme);
+			}
 		}
-		return allowed;
+		if (themes.length === 0) {
+			throw new CommandRejected('None of the themes in caerwyn.controls.theme.choices are installed.', 'The theme cannot be changed right now.');
+		}
+		return { themes, codes };
+	}
+
+	/** Logs a problem with the settings once, rather than at every command and `!help`. */
+	private warn(problem: string): void {
+		if (!this.warned.has(problem)) {
+			this.warned.add(problem);
+			this.options.log(problem);
+		}
 	}
 
 	/** The settings, checked: a value of the wrong type falls back to the default, never to forever. */
 	private config(): ThemeControlConfig {
 		const raw = this.options.getConfig() as Partial<Record<keyof ThemeControlConfig, unknown>>;
 		const duration = raw.durationSeconds;
-		if (raw.choices !== undefined && (!Array.isArray(raw.choices) || raw.choices.some((choice) => typeof choice !== 'string'))) {
-			throw new CommandRejected('caerwyn.controls.theme.choices must be a list of theme names.');
+		const choices = raw.choices;
+		const isList = Array.isArray(choices) && choices.every((choice) => typeof choice === 'string');
+		const isMap = typeof choices === 'object' && choices !== null && !Array.isArray(choices);
+		if (choices !== undefined && !isList && !isMap) {
+			throw new CommandRejected(
+				'caerwyn.controls.theme.choices must be a list of theme names, or short names mapped to theme names.',
+				'The theme cannot be changed right now.',
+			);
 		}
 		return {
 			durationSeconds:
 				typeof duration === 'number' && Number.isFinite(duration)
 					? Math.min(MAX_THEME_SECONDS, Math.max(MIN_THEME_SECONDS, duration))
 					: DEFAULT_THEME_SECONDS,
-			choices: (raw.choices as string[] | undefined) ?? [],
+			choices: (choices as ThemeControlConfig['choices'] | undefined) ?? [],
 		};
 	}
 }
@@ -330,20 +421,33 @@ export class ThemeControl implements Disposable {
  * an exact name first, then the only name that starts with what they typed, then the only one that contains it.
  * `random` picks any theme except high contrast ones and the one showing.
  */
-export function findTheme(themes: readonly ThemeInfo[], query: string, current: string | undefined, random: () => number): ThemeInfo | string {
+export function findTheme(
+	themes: readonly ThemeInfo[],
+	query: string,
+	current: string | undefined,
+	random: () => number,
+	/** Short names the user gave, which win over any name. */
+	codes: ReadonlyMap<string, ThemeInfo> = new Map(),
+): ThemeInfo | ThemeMiss {
 	const typed = query.trim();
 	if (!typed) {
-		return 'Say which theme, such as !theme monokai.';
+		return miss('Say which theme, such as !theme monokai.');
 	}
 	const unique = [...new Map(themes.map((theme) => [theme.id, theme])).values()];
 	const wanted = normalize(typed);
 	if (wanted === 'random') {
 		const candidates = unique.filter((theme) => theme.id !== current && (theme.kind === 'light' || theme.kind === 'dark'));
-		return candidates.length > 0 ? candidates[Math.floor(random() * candidates.length)] : 'There is no other theme to pick.';
+		return candidates.length > 0 ? candidates[Math.floor(random() * candidates.length)] : miss('There is no other theme to pick.');
 	}
 	const shown = typed.length > MAX_QUERY ? `${typed.slice(0, MAX_QUERY)}…` : typed;
+	// The chat view may quote the viewer; chat itself never does.
+	const unknown = { problem: `No theme is called "${shown}".`, chat: 'There is no theme by that name. Try !help theme.' };
 	if (!wanted) {
-		return `No theme is called "${shown}".`;
+		return unknown;
+	}
+	const coded = codes.get(wanted);
+	if (coded) {
+		return coded;
 	}
 	const names = (theme: ThemeInfo) => [normalize(theme.label), normalize(theme.id)];
 	for (const test of [
@@ -356,13 +460,28 @@ export function findTheme(themes: readonly ThemeInfo[], query: string, current: 
 			return matches[0];
 		}
 		if (matches.length > 1) {
-			return `"${shown}" could be ${matches.length} themes: ${matches
+			const some = `${matches
 				.slice(0, 5)
 				.map((theme) => theme.label)
-				.join(', ')}${matches.length > 5 ? '…' : ''}.`;
+				.join(', ')}${matches.length > 5 ? '…' : ''}`;
+			return {
+				problem: `"${shown}" could be ${matches.length} themes: ${some}.`,
+				chat: `That could be ${matches.length} themes: ${some}. Try the full name.`,
+			};
 		}
 	}
-	return `No theme is called "${shown}".`;
+	return unknown;
+}
+
+/** Why no theme was picked: `problem` for the user, who may see the viewer's words, and `chat` for saying in chat. */
+export interface ThemeMiss {
+	problem: string;
+	chat: string;
+}
+
+/** A miss whose explanation quotes nothing the viewer typed, so it is safe for both. */
+function miss(text: string): ThemeMiss {
+	return { problem: text, chat: text };
 }
 
 /** `90` → "1 min 30 s", `300` → "5 min". */
@@ -374,6 +493,33 @@ export function formatDuration(seconds: number): string {
 		return `${rest} s`;
 	}
 	return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+}
+
+/** Whether the user limited chat to some themes. */
+function hasChoices(raw: ThemeControlConfig['choices']): boolean {
+	return Array.isArray(raw) ? raw.length > 0 : Object.keys(raw).length > 0;
+}
+
+/** A short name: what a viewer types after `!theme`. */
+const CODE = /^[a-z0-9]{1,12}$/;
+
+/** The user's `choices`, as a list. Short names that cannot work are reported and left out. */
+function toChoices(raw: ThemeControlConfig['choices'], warn: (problem: string) => void): ThemeChoice[] {
+	if (Array.isArray(raw)) {
+		return raw.map((name) => ({ name }));
+	}
+	const choices: ThemeChoice[] = [];
+	for (const [key, name] of Object.entries(raw)) {
+		const code = key.toLowerCase();
+		if (typeof name !== 'string') {
+			warn(`caerwyn.controls.theme.choices: "${key}" must name a theme.`);
+		} else if (!CODE.test(code) || code === 'random') {
+			warn(`caerwyn.controls.theme.choices: "${key}" cannot be a short name. Use 1 to 12 letters or digits, and not "random".`);
+		} else {
+			choices.push({ name, code });
+		}
+	}
+	return choices;
 }
 
 function settingOf(record: ChatThemeRecord): ThemeSetting {

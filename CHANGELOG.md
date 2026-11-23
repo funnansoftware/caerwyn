@@ -14,4 +14,6 @@ All notable changes to the "caerwyn" extension will be documented in this file.
 - `!theme <name>`: your chat can switch the color theme for a few minutes, after which yours comes back.
 - The chat shows what became of each chat command under its message, and Caerwyn tells you when a viewer uses one while chat controls are off.
 - `!theme` works while VS Code follows the system's light or dark mode, by changing the preferred theme for the mode in use.
+- Chat command replies in Twitch chat, switched on with `caerwyn.controls.replies`, and `!help`.
+- Short names for `!theme`, set in `caerwyn.controls.theme.choices`, and a shorter `!help theme`. Replies are marked `(caerwyn)`.
 - Initial scaffold

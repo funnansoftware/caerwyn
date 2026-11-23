@@ -11,9 +11,8 @@ import { Disposable, Emitter } from '../util/emitter';
 export const AUDIENCES = ['everyone', 'subscriber', 'vip', 'moderator', 'broadcaster'] as const;
 export type Audience = (typeof AUDIENCES)[number];
 
-/** Each role's place in `AUDIENCES`. Roles not listed, such as `verified`, count as everyone. */
-/** Who may use a command, as said to the user. */
-const AUDIENCE_TEXT: Record<Audience, string> = {
+/** Who may use a command, in words. Fixed text, so it is safe to say in chat. */
+export const AUDIENCE_TEXT: Record<Audience, string> = {
 	everyone: 'for everyone',
 	subscriber: 'for subscribers and up',
 	vip: 'for VIPs and up',
@@ -21,6 +20,7 @@ const AUDIENCE_TEXT: Record<Audience, string> = {
 	broadcaster: 'only for the streamer',
 };
 
+/** Each role's place in `AUDIENCES`. Roles not listed, such as `verified`, count as everyone. */
 const ROLE_RANK: Partial<Record<Role, number>> = { subscriber: 1, vip: 2, moderator: 3, broadcaster: 4 };
 const MODERATOR_RANK = 3;
 
@@ -47,10 +47,29 @@ export interface ChatCommand {
 	aliases?: string[];
 	/** One line for the user, shown in the status bar tooltip. */
 	description: string;
+	/** How to type it, such as `!theme <name>`. Said in chat by `!help`, so fixed text only. */
+	usage?: string;
+	/** A line or two on how to use it, for `!help <command>`. Said in chat, so it must never include viewer text. */
+	help?(): string;
 	defaults: CommandDefaults;
-	/** Carries out the command. It may return a few words on what it did, shown under the message, such as "Monokai for 5 min". */
-	run(invocation: ChatCommandInvocation): void | string | Promise<void | string>;
+	/**
+	 * Carries out the command. It may return a few words on what it did, shown under the message, such as
+	 * "Monokai for 5 min", or a `CommandResult` that also says something in chat.
+	 */
+	run(invocation: ChatCommandInvocation): CommandRunResult | Promise<CommandRunResult>;
 }
+
+/** What a command can say about a run. Text meant for chat must never include anything a viewer typed. */
+export interface CommandResult {
+	/** Shown under the message in the chat view. */
+	summary?: string;
+	/** Said in chat whenever replies are on: the command exists to answer, such as `!help`. */
+	answer?: string;
+	/** Said in chat only when replies are on for everything, such as "Monokai for 5 min". */
+	confirmation?: string;
+}
+
+export type CommandRunResult = void | string | CommandResult;
 
 /** The user's overrides for one command, from settings. */
 export interface CommandSettings {
@@ -94,7 +113,14 @@ export interface ControlReport {
 	command: string;
 	message: ChatMessage;
 	outcome: ControlOutcome;
+	/** For the user: the log and the chat view. It may quote the viewer, so it is never said in chat. */
 	detail?: string;
+	/** What may be said in chat about it, from the command itself. Never anything a viewer typed. */
+	chat?: { text: string; kind: 'answer' | 'confirmation' | 'problem' };
+	/** For `cooldown`: how long until the viewer can use the command again. */
+	retryInSeconds?: number;
+	/** For `denied`: who may use the command. */
+	audience?: Audience;
 }
 
 export interface ChatControlsOptions {
@@ -114,7 +140,14 @@ export interface ChatControlsOptions {
  * Unlike any other error, it is not a fault: the viewer's cooldowns are given back, so a typo does not cost them.
  */
 export class CommandRejected extends Error {
-	constructor(message: string) {
+	/**
+	 * @param message For the user, in the log and chat view. It may quote what the viewer typed.
+	 * @param chatText What may be said back in chat. Fixed text only: chat replies come from the user's account.
+	 */
+	constructor(
+		message: string,
+		readonly chatText?: string,
+	) {
 		super(message);
 		this.name = 'CommandRejected';
 	}
@@ -146,8 +179,18 @@ export class ChatControls {
 	private readonly pending = new Map<string, Pending>();
 	private readonly reportEmitter = new Emitter<ControlReport>();
 	private readonly stateEmitter = new Emitter<void>();
-	/** Every recognised command and what became of it. */
-	readonly onReport = this.reportEmitter.event;
+	/**
+	 * Every recognised command and what became of it. A listener that throws is logged and skipped: it must not stop
+	 * other listeners, or make a command that worked look as if it failed.
+	 */
+	readonly onReport = (listener: (report: ControlReport) => void): Disposable =>
+		this.reportEmitter.event((report) => {
+			try {
+				listener(report);
+			} catch (error) {
+				this.options.log(`Chat controls: a listener failed: ${describe(error)}`);
+			}
+		});
 	/**
 	 * Fires when controls are paused, resumed, switched on or off, or a command is added or removed.
 	 * Commands that leave something behind, such as a changed theme, listen to undo it when controls stop.
@@ -180,6 +223,22 @@ export class ChatControls {
 	/** The registered commands, in the order they were added. */
 	get registered(): readonly ChatCommand[] {
 		return [...new Set(this.commands.values())];
+	}
+
+	/** The command a name or alias, without the `!`, stands for. */
+	find(name: string): ChatCommand | undefined {
+		return this.commands.get(name.toLowerCase());
+	}
+
+	/** Whether someone with these roles may use a command, as the settings stand: switched on, and allowed. */
+	canUse(command: ChatCommand, roles: readonly Role[]): boolean {
+		const settings = this.settingsFor(command);
+		return settings.enabled && rankOf(roles) >= AUDIENCES.indexOf(settings.allowed);
+	}
+
+	/** Who may use a command, as the settings stand. */
+	audienceOf(command: ChatCommand): Audience {
+		return this.settingsFor(command).allowed;
 	}
 
 	/** Whether a name or alias, without the `!`, is a registered command. */
@@ -291,7 +350,7 @@ export class ChatControls {
 			return; // Not for us: chats are full of commands for other bots.
 		}
 		const invocation: ChatCommandInvocation = { command: command.name, args: parsed.args, message };
-		const report = (outcome: ControlOutcome, detail?: string) => this.report(invocation, outcome, detail);
+		const report = (outcome: ControlOutcome, detail?: string, extra?: Partial<ControlReport>) => this.report(invocation, outcome, detail, extra);
 		if (!this.enabled) {
 			// Said rather than ignored, so the user can tell why a viewer's command did nothing.
 			report('off');
@@ -314,7 +373,7 @@ export class ChatControls {
 		}
 		const rank = rankOf(message.author.roles);
 		if (rank < AUDIENCES.indexOf(settings.allowed)) {
-			report('denied', AUDIENCE_TEXT[settings.allowed]);
+			report('denied', AUDIENCE_TEXT[settings.allowed], { audience: settings.allowed });
 			return;
 		}
 		const isBroadcaster = message.author.roles.includes('broadcaster');
@@ -325,7 +384,7 @@ export class ChatControls {
 				this.remaining(userKey, settings.userCooldownSeconds, now),
 			);
 			if (wait > 0) {
-				report('cooldown', `${Math.ceil(wait / 1000)}s left`);
+				report('cooldown', `${Math.ceil(wait / 1000)}s left`, { retryInSeconds: Math.ceil(wait / 1000) });
 				return;
 			}
 		}
@@ -356,19 +415,35 @@ export class ChatControls {
 	}
 
 	private async run(command: ChatCommand, invocation: ChatCommandInvocation, charges: Charge[]): Promise<void> {
+		let result: CommandRunResult;
 		try {
 			// Settings or the command itself may have changed during the delay.
 			if (!this.active || this.commands.get(command.name) !== command || !this.settingsFor(command).enabled) {
 				this.report(invocation, 'cancelled');
 				return;
 			}
-			const summary = await command.run(invocation);
-			this.report(invocation, 'ran', typeof summary === 'string' && summary ? summary : undefined);
+			result = await command.run(invocation);
 		} catch (error) {
 			// Nothing happened, so the viewer has not had their turn.
 			this.refund(charges);
-			this.report(invocation, error instanceof CommandRejected ? 'rejected' : 'failed', describe(error));
+			if (error instanceof CommandRejected) {
+				this.report(invocation, 'rejected', error.message, error.chatText ? { chat: { text: error.chatText, kind: 'problem' } } : undefined);
+			} else {
+				this.report(invocation, 'failed', describe(error));
+			}
+			return;
 		}
+		// Reported outside the `try`, so nothing a listener does can turn a run into a failure.
+		if (typeof result === 'string' || result === undefined) {
+			this.report(invocation, 'ran', result || undefined);
+			return;
+		}
+		const chat = result.answer
+			? { text: result.answer, kind: 'answer' as const }
+			: result.confirmation
+				? { text: result.confirmation, kind: 'confirmation' as const }
+				: undefined;
+		this.report(invocation, 'ran', result.summary || undefined, chat ? { chat } : undefined);
 	}
 
 	private charge(key: string, now: number): Charge {
@@ -445,10 +520,10 @@ export class ChatControls {
 		}
 	}
 
-	private report(invocation: ChatCommandInvocation, outcome: ControlOutcome, detail?: string): void {
+	private report(invocation: ChatCommandInvocation, outcome: ControlOutcome, detail?: string, extra?: Partial<ControlReport>): void {
 		const { command, message } = invocation;
 		this.options.log(`Chat control !${command} from ${message.author.name} (${message.platform}): ${outcome}${detail ? `, ${detail}` : ''}`);
-		this.reportEmitter.fire({ command, message, outcome, detail });
+		this.reportEmitter.fire({ ...extra, command, message, outcome, detail });
 	}
 }
 

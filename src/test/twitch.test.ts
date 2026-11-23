@@ -508,6 +508,38 @@ suite('TwitchChat', () => {
 		}
 	});
 
+	test('sends a chat reply as the signed-in user, and explains a refusal or a dropped message', async () => {
+		const sink = new RecordingSink();
+		let respond: () => Response = () => json({ data: [{ message_id: 'sent-1', is_sent: true, drop_reason: null }] });
+		const auth = new FakeAuth((url) => (url === 'https://helix.test/chat/messages' ? respond() : helix(url)));
+		chat = new TwitchChat({ auth, sources: [TWITCH_SELF], sink, wsUrl: eventSub.url, helixUrl: 'https://helix.test' });
+		chat.start();
+		await waitFor(() => sink.state('twitch:me') === 'connected', 'the channel to connect');
+
+		await chat.sendMessage('100', '🤖 hello', 'parent-1');
+		await chat.sendMessage('100', '🤖 no parent');
+		const sent = auth.requests
+			.filter((request) => request.url === 'https://helix.test/chat/messages')
+			.map((request) => ({ method: request.init?.method, body: JSON.parse(String(request.init?.body)) as unknown }));
+		assert.deepStrictEqual(sent, [
+			{ method: 'POST', body: { broadcaster_id: '100', sender_id: '100', message: '🤖 hello', reply_parent_message_id: 'parent-1' } },
+			{ method: 'POST', body: { broadcaster_id: '100', sender_id: '100', message: '🤖 no parent' } },
+		]);
+
+		respond = () => json({ data: [{ message_id: '', is_sent: false, drop_reason: { code: 'slow_mode', message: 'Slow mode is on.' } }] });
+		await assert.rejects(chat.sendMessage('100', 'x'), /did not send the message: Slow mode is on/);
+		for (const [code, pattern] of [
+			[401, /Sign in to Twitch again/],
+			[403, /does not let this account chat/],
+			[422, /too long/],
+			[429, /too many messages/],
+			[500, /Twitch: nope/],
+		] as const) {
+			respond = () => json({ message: 'nope' }, code);
+			await assert.rejects(chat.sendMessage('100', 'x'), pattern, `HTTP ${code}`);
+		}
+	});
+
 	test('moves to the reconnect URL without subscribing again', async () => {
 		const sink = new RecordingSink();
 		const auth = new FakeAuth(helix);

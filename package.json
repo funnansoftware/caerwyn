@@ -208,6 +208,22 @@
           "scope": "application",
           "markdownDescription": "How long to hold a viewer's command before carrying it out, so a moderator can delete the message first. A deleted message, or a viewer timed out or banned, cancels it. Your own commands and your moderators' run at once."
         },
+        "caerwyn.controls.replies": {
+          "type": "string",
+          "enum": [
+            "off",
+            "problems",
+            "all"
+          ],
+          "default": "off",
+          "scope": "application",
+          "enumDescriptions": [
+            "Caerwyn never posts in chat.",
+            "Answer !help, and tell viewers why their command did not run.",
+            "Also confirm what a command did, such as \"Monokai for 5 min\"."
+          ],
+          "markdownDescription": "Whether Caerwyn replies to viewers in your Twitch chat, from your account. Replies start with 🤖, never repeat what a viewer typed, and are limited to a few every 30 seconds. Switching replies on asks you to sign in to Twitch again, to grant permission to send chat messages. YouTube chat gets no replies yet."
+        },
         "caerwyn.controls.commands": {
           "type": "object",
           "default": {},
@@ -261,13 +277,35 @@
           "markdownDescription": "How long a color theme picked with `!theme` stays before yours comes back. Pausing chat controls puts yours back at once."
         },
         "caerwyn.controls.theme.choices": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Theme names."
+            },
+            {
+              "type": "object",
+              "description": "Short names mapped to theme names.",
+              "propertyNames": {
+                "pattern": "^[A-Za-z0-9]{1,12}$",
+                "not": {
+                  "enum": [
+                    "random",
+                    "RANDOM",
+                    "Random"
+                  ]
+                }
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          ],
           "default": [],
           "scope": "application",
-          "markdownDescription": "The color themes chat may pick with `!theme`, by the names shown in **Preferences: Color Theme**. Leave empty to allow every installed theme."
+          "markdownDescription": "The color themes chat may pick with `!theme`, by the names shown in **Preferences: Color Theme**. Either a list, `[\"Monokai\", \"Abyss\"]`, or short names for chat to type, mapped to theme names: `{ \"cat\": \"Catppuccin Mocha\", \"kai\": \"Monokai\" }`. Short names are 1 to 12 letters or digits; `!help theme` lists them. Leave empty to allow every installed theme."
         },
         "caerwyn.simulation.enabled": {
           "type": "boolean",
