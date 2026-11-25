@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { promises as fs, appendFileSync, mkdirSync } from 'fs';
 import * as path from 'path';
+import { dropOldest } from '../util/collections';
 import { asRecord, isRecord, parseJson } from '../util/json';
 import { ChatEvent, ChatMessage, HistoryEntry, HistoryPage, HistoryQuery, Platform } from './types';
 
@@ -217,7 +218,7 @@ export class ChatHistory {
 		this.index.delete(key);
 		this.index.set(key, indexed);
 		if (this.index.size > INDEX_MAX) {
-			this.index.delete(this.index.keys().next().value as string);
+			dropOldest(this.index);
 		}
 	}
 

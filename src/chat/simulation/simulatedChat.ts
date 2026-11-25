@@ -675,7 +675,10 @@ export class SimulatedChat {
 			} else {
 				this.youtubeItem(YOUTUBE_TROUBLEMAKER, { type: 'textMessageEvent', displayMessage: SPAM_LINE });
 			}
-			return this.recent[platform].pop() as Recent;
+			const throwaway = this.recent[platform].pop();
+			if (throwaway) {
+				return throwaway;
+			}
 		}
 		const entry = this.recentOrNew(platform);
 		this.recent[platform] = this.recent[platform].filter((other) => other !== entry);

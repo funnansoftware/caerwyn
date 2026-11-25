@@ -1,5 +1,6 @@
 import type { StateStore } from '../chat/chatService';
 import { Disposable } from '../util/emitter';
+import type { Untrusted } from '../util/json';
 import { ChatCommandInvocation, ChatControls, CommandRejected, CommandResult } from './chatControls';
 
 // `!theme <name>`: a viewer switches the editor's color theme for a while, after which it goes back.
@@ -74,7 +75,8 @@ export interface ThemeControlOptions {
 	host: ThemeHost;
 	/** Shared by every window, so whichever window is open can put the user's theme back. */
 	state: StateStore;
-	getConfig(): ThemeControlConfig;
+	/** Read as untrusted: see `config`. */
+	getConfig(): Untrusted<ThemeControlConfig>;
 	log(message: string): void;
 	now?: () => number;
 	random?: () => number;
@@ -395,7 +397,7 @@ export class ThemeControl implements Disposable {
 
 	/** The settings, checked: a value of the wrong type falls back to the default, never to forever. */
 	private config(): ThemeControlConfig {
-		const raw = this.options.getConfig() as Partial<Record<keyof ThemeControlConfig, unknown>>;
+		const raw = this.options.getConfig();
 		const duration = raw.durationSeconds;
 		const choices = raw.choices;
 		const isList = Array.isArray(choices) && choices.every((choice) => typeof choice === 'string');

@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { ChatService, PlatformAuth, StateStore } from '../chat/chatService';
-import { ChatEvent, ChatMessage, ChatSink, NotSignedInError, TWITCH_SELF, ViewerCounts, YOUTUBE_SELF, twitchChannelSource } from '../chat/types';
+import { ChatEvent, ChatMessage, NotSignedInError, TWITCH_SELF, ViewerCounts, YOUTUBE_SELF, twitchChannelSource } from '../chat/types';
 import { delay, waitFor } from './helpers';
 
 class MemoryState implements StateStore {
@@ -60,7 +60,7 @@ suite('ChatService', () => {
 	teardown(() => service.dispose());
 
 	/** Feeds an event in as a connection would. */
-	const emit = (event: ChatEvent) => (service as unknown as { sink: ChatSink }).sink.event(event);
+	const emit = (event: ChatEvent) => service['sink'].event(event);
 	const ids = () => service.messages.map((m) => m.id);
 
 	test('persists sources, ignores duplicates and reports sign-in state once started', async () => {
@@ -124,7 +124,7 @@ suite('ChatService', () => {
 
 	test('keeps viewer counts for known sources, reports changes together, and forgets a source’s count with it', async () => {
 		await service.addSource(TWITCH_SELF);
-		const sink = (service as unknown as { sink: ChatSink }).sink;
+		const sink = service['sink'];
 		const fired: ViewerCounts[] = [];
 		service.onViewerCounts((counts) => fired.push(counts));
 

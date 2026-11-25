@@ -1,5 +1,4 @@
 import * as assert from 'assert';
-import { AddressInfo } from 'net';
 import { WebSocket, WebSocketServer } from 'ws';
 import { TwitchChat } from '../chat/twitch/twitchChat';
 import { mapChatMessage, mapNotification } from '../chat/twitch/twitchMapper';
@@ -7,7 +6,36 @@ import { SpendMatcher, mapAutomaticRedemption, mapBitsUse } from '../chat/twitch
 import { mapAutomodHold, mapAutomodUpdate } from '../chat/twitch/twitchAutomod';
 import { ModerationError } from '../chat/moderation';
 import { NotSignedInError, TWITCH_SELF, twitchChannelSource } from '../chat/types';
-import { FakeAuth, RecordingSink, delay, json, waitFor } from './helpers';
+import { asRecord, asString } from '../util/json';
+import { FakeAuth, RecordingSink, delay, json, requestJson, waitFor } from './helpers';
+
+interface Subscription {
+	type: string;
+	version?: string;
+	condition: Record<string, string>;
+	transport: Record<string, string>;
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+	const result: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(asRecord(value) ?? {})) {
+		if (typeof entry === 'string') {
+			result[key] = entry;
+		}
+	}
+	return result;
+}
+
+/** A recorded EventSub subscription request, read back. */
+function toSubscription(init: RequestInit | undefined): Subscription {
+	const body = asRecord(requestJson(init));
+	return {
+		type: asString(body?.type) ?? '',
+		version: asString(body?.version),
+		condition: stringRecord(body?.condition),
+		transport: stringRecord(body?.transport),
+	};
+}
 
 const chatEvent = {
 	broadcaster_user_id: '100',
@@ -294,7 +322,11 @@ class FakeEventSub {
 	}
 
 	get url(): string {
-		return `ws://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+		const address = this.server.address();
+		if (typeof address !== 'object' || address === null) {
+			throw new Error('The test server is not listening.');
+		}
+		return `ws://127.0.0.1:${address.port}`;
 	}
 
 	send(socket: WebSocket, type: string, payload: object, extra: object = {}, id = `id-${++this.counter}`): void {
@@ -343,7 +375,7 @@ suite('TwitchChat', () => {
 	const subscriptions = (auth: FakeAuth) =>
 		auth.requests
 			.filter((request) => request.url.endsWith('/eventsub/subscriptions'))
-			.map((request) => JSON.parse(String(request.init?.body)) as { type: string; condition: Record<string, string>; transport: Record<string, string> });
+			.map((request) => toSubscription(request.init));
 
 	test('subscribes each channel on welcome and delivers chat, removals and duplicates correctly', async () => {
 		const sink = new RecordingSink();
@@ -399,7 +431,7 @@ suite('TwitchChat', () => {
 
 		const spending = subscriptions(auth)
 			.filter((sub) => !sub.type.startsWith('channel.chat.') && !sub.type.startsWith('automod.'))
-			.map((sub) => ({ type: sub.type, version: (sub as { version?: string }).version, condition: sub.condition }));
+			.map((sub) => ({ type: sub.type, version: sub.version, condition: sub.condition }));
 		assert.deepStrictEqual(spending, [
 			{ type: 'channel.channel_points_automatic_reward_redemption.add', version: '2', condition: { broadcaster_user_id: '100' } },
 			{ type: 'channel.bits.use', version: '1', condition: { broadcaster_user_id: '100' } },
@@ -426,7 +458,7 @@ suite('TwitchChat', () => {
 	test('keeps chat going when Twitch refuses the spending subscriptions, and says why', async () => {
 		const sink = new RecordingSink();
 		const auth = new FakeAuth((url, init) => {
-			const type = url.endsWith('/eventsub/subscriptions') ? (JSON.parse(String(init?.body)) as { type: string }).type : '';
+			const type = url.endsWith('/eventsub/subscriptions') ? toSubscription(init).type : '';
 			return type && !type.startsWith('channel.chat.') ? json({ message: 'subscription missing proper authorization' }, 403) : helix(url);
 		});
 		chat = new TwitchChat({ auth, sources: [TWITCH_SELF], sink, wsUrl: eventSub.url, helixUrl: 'https://helix.test' });
@@ -463,7 +495,7 @@ suite('TwitchChat', () => {
 		await waitFor(() => sink.state('twitch:me') === 'connected', 'the channel to connect');
 		const automod = subscriptions(auth)
 			.filter((sub) => sub.type.startsWith('automod.'))
-			.map((sub) => ({ type: sub.type, version: (sub as { version?: string }).version, condition: sub.condition }));
+			.map((sub) => ({ type: sub.type, version: sub.version, condition: sub.condition }));
 		assert.deepStrictEqual(automod, [
 			{ type: 'automod.message.hold', version: '2', condition: { broadcaster_user_id: '100', moderator_user_id: '100' } },
 			{ type: 'automod.message.update', version: '2', condition: { broadcaster_user_id: '100', moderator_user_id: '100' } },
@@ -490,7 +522,7 @@ suite('TwitchChat', () => {
 		await chat.resolveHeld('held-2', false);
 		const sent = auth.requests
 			.filter((request) => request.url === 'https://helix.test/moderation/automod/message')
-			.map((request) => ({ method: request.init?.method, body: JSON.parse(String(request.init?.body)) as unknown }));
+			.map((request) => ({ method: request.init?.method, body: requestJson(request.init) }));
 		assert.deepStrictEqual(sent, [
 			{ method: 'POST', body: { user_id: '100', msg_id: 'held-1', action: 'ALLOW' } },
 			{ method: 'POST', body: { user_id: '100', msg_id: 'held-2', action: 'DENY' } },
@@ -520,7 +552,7 @@ suite('TwitchChat', () => {
 		await chat.sendMessage('100', '🤖 no parent');
 		const sent = auth.requests
 			.filter((request) => request.url === 'https://helix.test/chat/messages')
-			.map((request) => ({ method: request.init?.method, body: JSON.parse(String(request.init?.body)) as unknown }));
+			.map((request) => ({ method: request.init?.method, body: requestJson(request.init) }));
 		assert.deepStrictEqual(sent, [
 			{ method: 'POST', body: { broadcaster_id: '100', sender_id: '100', message: '🤖 hello', reply_parent_message_id: 'parent-1' } },
 			{ method: 'POST', body: { broadcaster_id: '100', sender_id: '100', message: '🤖 no parent' } },

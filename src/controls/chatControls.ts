@@ -1,6 +1,7 @@
 import type { StateStore } from '../chat/chatService';
 import type { ChatEvent, ChatMessage, CommandFeedback, Role } from '../chat/types';
 import { Disposable, Emitter } from '../util/emitter';
+import type { Untrusted } from '../util/json';
 
 // Lets viewers in the user's own chat run commands such as `!theme dracula` that change the editor.
 // Everything a command must pass before it runs lives here: who may use it, how often, a delay that gives
@@ -128,7 +129,8 @@ export interface ChatControlsOptions {
 	onEvents(listener: (events: ChatEvent[]) => void): Disposable;
 	/** Whether a source is the user's own chat. Commands from chats the user only reads are ignored. */
 	isOwnSource(sourceId: string): boolean;
-	getConfig(): ChatControlsConfig;
+	/** Read as untrusted: see `config`. */
+	getConfig(): Untrusted<ChatControlsConfig>;
 	/** Where the pause switch is kept, so it survives a reload. */
 	state: StateStore;
 	log(message: string): void;
@@ -471,7 +473,7 @@ export class ChatControls {
 	 * back to the safe choice: switched off, and the default delay.
 	 */
 	private config(): ChatControlsConfig {
-		const raw = this.options.getConfig() as Partial<Record<keyof ChatControlsConfig, unknown>>;
+		const raw = this.options.getConfig();
 		return {
 			enabled: raw.enabled === true,
 			delaySeconds:

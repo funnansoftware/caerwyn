@@ -475,6 +475,9 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 }
 
+/** What the extension exposes to its tests. */
+export type ExtensionApi = ReturnType<typeof activate>;
+
 export function deactivate(): Promise<void> | undefined {
 	return themeControl?.shutdown();
 }

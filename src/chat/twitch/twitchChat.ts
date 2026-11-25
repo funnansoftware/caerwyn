@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { dropOldest } from '../../util/collections';
 import { backoffMs } from '../../util/emitter';
 import { Account, ChatAuth, ChatSink, NotSignedInError, SourceStatus, TwitchSource } from '../types';
 import { asArray, asNumber, asRecord, asString, readJsonObject } from '../../util/json';
@@ -541,7 +542,7 @@ export class TwitchChat {
 			}
 			this.seen.add(id);
 			if (this.seen.size > SEEN_LIMIT) {
-				this.seen.delete(this.seen.values().next().value as string);
+				dropOldest(this.seen);
 			}
 		}
 		const channel = this.channels.get(event.broadcaster_user_id);

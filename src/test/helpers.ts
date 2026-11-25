@@ -1,3 +1,6 @@
+import * as vscode from 'vscode';
+import type { ExtensionApi } from '../extension';
+import { asRecord, parseJson } from '../util/json';
 import { Account, ChatAuth, ChatEvent, ChatSink, SourceStatus } from '../chat/types';
 
 /** Records everything a chat connection reports. */
@@ -99,4 +102,23 @@ export async function waitFor(condition: () => boolean, what: string, timeoutMs 
 
 export function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The extension's test API. Throws when the extension is not installed in the test host. */
+export function caerwynApi(): ExtensionApi {
+	const api: ExtensionApi | undefined = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports;
+	if (!api) {
+		throw new Error('The Caerwyn extension is not available in the test host.');
+	}
+	return api;
+}
+
+/** The JSON body of a recorded request, parsed. */
+export function requestJson(init: RequestInit | undefined): unknown {
+	return parseJson(String(init?.body));
+}
+
+/** The JSON body of a recorded request as an object, or `{}` when it is not one. */
+export function requestObject(init: RequestInit | undefined): Record<string, unknown> {
+	return asRecord(requestJson(init)) ?? {};
 }

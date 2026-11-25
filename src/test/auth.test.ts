@@ -4,6 +4,7 @@ import { GoogleOAuth } from '../auth/googleOAuth';
 import { DeviceCode, FetchLike, OAuthClient, OAuthError, TokenSet, awaitDeviceAuthorization } from '../auth/oauth';
 import { TwitchOAuth, validateTwitchToken } from '../auth/twitchOAuth';
 import { NotSignedInError } from '../chat/types';
+import { isRecord } from '../util/json';
 import { json } from './helpers';
 
 const device: DeviceCode = { deviceCode: 'dev', userCode: 'ABCD', verificationUri: 'https://example.test', expiresIn: 60, interval: 0 };
@@ -11,6 +12,25 @@ const device: DeviceCode = { deviceCode: 'dev', userCode: 'ABCD', verificationUr
 interface Call {
 	url: string;
 	params: URLSearchParams;
+}
+
+function nextResponse(responses: Response[]): Response {
+	const response = responses.shift();
+	if (!response) {
+		throw new Error('The test queued too few responses.');
+	}
+	return response;
+}
+
+/** The headers of a request that sets them as a plain object, as the code under test does. */
+function stringHeaders(headers: unknown): Record<string, string> {
+	const result: Record<string, string> = {};
+	for (const [name, value] of Object.entries(isRecord(headers) ? headers : {})) {
+		if (typeof value === 'string') {
+			result[name] = value;
+		}
+	}
+	return result;
 }
 
 function recordingFetch(respond: (call: Call) => Response): { fetchFn: FetchLike; calls: Call[] } {
@@ -48,7 +68,7 @@ suite('TwitchOAuth', () => {
 			json({ access_token: 'at', refresh_token: 'rt', expires_in: 14000, scope: ['user:read:chat'], token_type: 'bearer' }),
 			json({ status: 400, message: 'invalid device code' }, 400),
 		];
-		const { fetchFn, calls } = recordingFetch(() => responses.shift() as Response);
+		const { fetchFn, calls } = recordingFetch(() => nextResponse(responses));
 		const oauth = new TwitchOAuth(fetchFn);
 		assert.deepStrictEqual(await oauth.pollToken({ clientId: 'cid' }, device, ['user:read:chat']), { status: 'pending' });
 		const result = await oauth.pollToken({ clientId: 'cid' }, device, ['user:read:chat']);
@@ -94,7 +114,7 @@ suite('GoogleOAuth', () => {
 			json({ access_token: 'at', refresh_token: 'rt', expires_in: 3599, scope: 'a b', token_type: 'Bearer' }),
 			json({ error: 'access_denied' }, 403),
 		];
-		const { fetchFn, calls } = recordingFetch(() => responses.shift() as Response);
+		const { fetchFn, calls } = recordingFetch(() => nextResponse(responses));
 		const oauth = new GoogleOAuth(fetchFn);
 		const creds = { clientId: 'cid', clientSecret: 'secret' };
 		assert.deepStrictEqual(await oauth.pollToken(creds, device), { status: 'pending' });
@@ -116,18 +136,32 @@ suite('GoogleOAuth', () => {
 	});
 });
 
+/** An OAuth client that fails on any call a test did not expect, so a test names only what it uses. */
+function fakeOAuth(overrides: Partial<OAuthClient>): OAuthClient {
+	const unexpected = (name: string) => async (): Promise<never> => {
+		throw new Error(`unexpected OAuthClient.${name}`);
+	};
+	return {
+		requestDeviceCode: unexpected('requestDeviceCode'),
+		pollToken: unexpected('pollToken'),
+		refresh: unexpected('refresh'),
+		revoke: async () => undefined,
+		...overrides,
+	};
+}
+
 suite('awaitDeviceAuthorization', () => {
 	const tokens: TokenSet = { accessToken: 'at', expiresAt: Date.now() + 1000, scopes: [] };
 
 	test('polls until approved', async () => {
 		let polls = 0;
-		const client = { pollToken: async () => (++polls < 3 ? { status: 'pending' } : { status: 'ok', tokens }) } as unknown as OAuthClient;
+		const client = fakeOAuth({ pollToken: async () => (++polls < 3 ? { status: 'pending' } : { status: 'ok', tokens }) });
 		assert.strictEqual(await awaitDeviceAuthorization(client, { clientId: 'cid' }, device, []), tokens);
 		assert.strictEqual(polls, 3);
 	});
 
 	test('stops when cancelled', async () => {
-		const client = { pollToken: async () => ({ status: 'pending' }) } as unknown as OAuthClient;
+		const client = fakeOAuth({ pollToken: async () => ({ status: 'pending' }) });
 		const abort = new AbortController();
 		const waiting = awaitDeviceAuthorization(client, { clientId: 'cid' }, { ...device, interval: 1 }, [], abort.signal);
 		abort.abort(new Error('cancelled'));
@@ -153,13 +187,12 @@ suite('AuthSession', () => {
 		const secrets = new MemorySecrets();
 		const apiCalls: Record<string, string>[] = [];
 		let refreshes = 0;
-		const oauth = {
+		const oauth = fakeOAuth({
 			refresh: (...args: Parameters<OAuthClient['refresh']>) => {
 				refreshes++;
 				return refresh(...args);
 			},
-			revoke: async () => undefined,
-		} as unknown as OAuthClient;
+		});
 		const session = new AuthSession({
 			storageKey: 'test',
 			secrets,
@@ -168,7 +201,7 @@ suite('AuthSession', () => {
 			identify: async () => ({ id: '100', label: 'me' }),
 			apiHeaders: (creds) => ({ 'Client-Id': creds.clientId }),
 			fetchFn: async (_url, init) => {
-				const headers = init?.headers as Record<string, string>;
+				const headers = stringHeaders(init?.headers);
 				apiCalls.push(headers);
 				return respond(headers.Authorization.replace('Bearer ', ''));
 			},
@@ -228,7 +261,7 @@ suite('AuthSession', () => {
 		const session = new AuthSession({
 			storageKey: 'test',
 			secrets: new MemorySecrets(),
-			oauth: {} as OAuthClient,
+			oauth: fakeOAuth({}),
 			scopes: () => (replies ? ['read', 'write'] : ['read']),
 			identify: async () => ({ id: '1', label: 'me' }),
 			log: () => undefined,

@@ -3,6 +3,9 @@
 
 export type JsonObject = Record<string, unknown>;
 
+/** The fields of `T` as a reader must treat them when the data came from a file a person edits: any value at all. */
+export type Untrusted<T> = Partial<Record<keyof T, unknown>>;
+
 export function isRecord(value: unknown): value is JsonObject {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

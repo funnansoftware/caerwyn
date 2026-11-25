@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import type { ChatCommand } from '../controls/chatControls';
-import { delay, waitFor } from './helpers';
+import { caerwynApi, delay, waitFor } from './helpers';
 
 suite('Extension', () => {
 	const isChatTab = (tab: vscode.Tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith('caerwyn.chat');
@@ -38,7 +38,7 @@ suite('Extension', () => {
 
 		// The webview posts `ready` as the last step of its script, so this shows the page loaded under its
 		// content security policy and the script ran to the end.
-		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as { chatViewReadyCount(): number };
+		const api = caerwynApi();
 		await waitFor(() => api.chatViewReadyCount() >= 1, 'the chat webview to report ready', 15000);
 
 		// Opening again reveals the existing tab rather than creating a second one.
@@ -51,7 +51,7 @@ suite('Extension', () => {
 	});
 
 	test('opens the chat in the sidebar and shares it with the tab', async () => {
-		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as { chatViewReadyCount(): number };
+		const api = caerwynApi();
 		const before = api.chatViewReadyCount();
 		await vscode.commands.executeCommand('caerwyn.openChatSidebar');
 		await waitFor(() => api.chatViewReadyCount() > before, 'the sidebar webview to report ready', 15000);
@@ -68,9 +68,7 @@ suite('Extension', () => {
 	});
 
 	test('with replies on, Caerwyn answers !help and a refused command in simulated chat, without repeating the viewer', async () => {
-		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as {
-			chatMessages(): readonly { author: { id: string }; fragments: { text: string }[] }[];
-		};
+		const api = caerwynApi();
 		const caerwyn = () => vscode.workspace.getConfiguration('caerwyn');
 		const replies = () =>
 			api
@@ -102,10 +100,7 @@ suite('Extension', () => {
 	});
 
 	test('a simulated chat command runs through chat controls, and pausing stops the next one', async () => {
-		const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as {
-			registerChatCommand(command: ChatCommand): vscode.Disposable;
-			chatControlsPaused(): boolean;
-		};
+		const api = caerwynApi();
 		const config = () => vscode.workspace.getConfiguration('caerwyn');
 		const runs: string[] = [];
 		const registration = api.registerChatCommand({
@@ -184,7 +179,7 @@ suite('Extension', () => {
 			await waitFor(() => vscode.window.activeColorTheme.kind === kindFollowing, 'the system’s theme to show again', 10000);
 		} finally {
 			await vscode.workspace.getConfiguration('window').update('autoDetectColorScheme', undefined, vscode.ConfigurationTarget.Global);
-			const api = vscode.extensions.getExtension('funnansoftware.caerwyn')?.exports as { chatControlsPaused(): boolean };
+			const api = caerwynApi();
 			if (api.chatControlsPaused()) {
 				await vscode.commands.executeCommand('caerwyn.toggleChatControls');
 			}

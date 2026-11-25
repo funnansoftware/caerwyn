@@ -13,6 +13,7 @@ import {
 	parseCommand,
 } from '../controls/chatControls';
 import { Emitter } from '../util/emitter';
+import type { Untrusted } from '../util/json';
 import { delay, waitFor } from './helpers';
 
 class MemoryState implements StateStore {
@@ -51,7 +52,7 @@ let now = 1_000_000;
 
 suite('ChatControls', () => {
 	let events: Emitter<ChatEvent[]>;
-	let config: ChatControlsConfig;
+	let config: Untrusted<ChatControlsConfig>;
 	let state: MemoryState;
 	let controls: ChatControls;
 	let reports: ControlReport[];
@@ -177,7 +178,7 @@ suite('ChatControls', () => {
 		send(chat('!theme', { roles: ['subscriber'] }));
 		await waitFor(() => runs.length === 3, 'the subscriber command');
 
-		config.commands = { theme: { allowed: 'nonsense' as never } };
+		config.commands = { theme: { allowed: 'nonsense' } };
 		send(chat('!theme', { roles: ['subscriber'] }));
 		await delay(10);
 		assert.strictEqual(runs.length, 3, 'an unknown level falls back to the default');
@@ -309,7 +310,7 @@ suite('ChatControls', () => {
 	test('settings of the wrong type fall back to the safe choice', async () => {
 		controls.register(command());
 		const setConfig = (raw: Record<string, unknown>) => {
-			config = raw as unknown as ChatControlsConfig;
+			config = raw;
 		};
 
 		setConfig({ enabled: 'false', delaySeconds: 0, commands: {} });

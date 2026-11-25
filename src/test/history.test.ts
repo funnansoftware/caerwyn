@@ -5,7 +5,7 @@ import * as path from 'path';
 import { ChatService, PlatformAuth, StateStore } from '../chat/chatService';
 import { ChatHistory, parseHistoryQuery } from '../chat/history';
 import { SIMULATED_SOURCES } from '../chat/simulation/simulatedChat';
-import { ChatMessage, ChatSink, HistoryQuery, NotSignedInError, Platform } from '../chat/types';
+import { ChatMessage, HistoryQuery, NotSignedInError, Platform } from '../chat/types';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -187,7 +187,7 @@ suite('ChatHistory', () => {
 			log: () => undefined,
 		});
 		try {
-			const sink = (service as unknown as { sink: ChatSink }).sink;
+			const sink = service['sink'];
 			const simulated = SIMULATED_SOURCES[0];
 			sink.event({ type: 'message', message: message('real') });
 			sink.event({ type: 'message', message: message('fake', { sourceId: simulated.id }) });

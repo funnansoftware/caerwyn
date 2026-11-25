@@ -4,6 +4,7 @@ import { ChatEvent, ChatMessage } from '../chat/types';
 import { ChatControls, ChatControlsConfig, CommandRejected } from '../controls/chatControls';
 import { ThemeControl, ThemeControlConfig, ThemeHost, ThemeInfo, ThemeSetting, Timers, findTheme, formatDuration } from '../controls/themeControl';
 import { Emitter } from '../util/emitter';
+import type { Untrusted } from '../util/json';
 
 class MemoryState implements StateStore {
 	readonly values = new Map<string, unknown>();
@@ -96,7 +97,9 @@ class ManualTimers implements Timers {
 		return id;
 	}
 	clear(handle: unknown): void {
-		this.pending.delete(handle as number);
+		if (typeof handle === 'number') {
+			this.pending.delete(handle);
+		}
 	}
 	/** The delay of the one timer waiting. */
 	get delay(): number | undefined {
@@ -187,7 +190,7 @@ suite('findTheme', () => {
 suite('ThemeControl', () => {
 	let events: Emitter<ChatEvent[]>;
 	let controlsConfig: ChatControlsConfig;
-	let themeConfig: ThemeControlConfig;
+	let themeConfig: Untrusted<ThemeControlConfig>;
 	let state: MemoryState;
 	let controls: ChatControls;
 	let host: FakeHost;
@@ -316,13 +319,13 @@ suite('ThemeControl', () => {
 
 		themeConfig.choices = ['Not Installed'];
 		await assert.rejects(run('monokai'), /None of the themes/);
-		themeConfig.choices = 'Monokai' as never;
+		themeConfig.choices = 'Monokai';
 		await assert.rejects(run('monokai'), /must be a list/);
 		assert.deepStrictEqual(host.writes, ['Solarized Light']);
 	});
 
 	test('a duration of the wrong type uses the default, and one out of range is held to it', async () => {
-		themeConfig.durationSeconds = 'forever' as never;
+		themeConfig.durationSeconds = 'forever';
 		await run('monokai');
 		assert.strictEqual(timers.delay, 300_000);
 		themeConfig.durationSeconds = 0;
@@ -519,7 +522,7 @@ suite('ThemeControl', () => {
 	});
 
 	test('short names that cannot work are left out and logged once; none usable never means every theme', async () => {
-		themeConfig.choices = { kai: 'Monokai', random: 'Solarized Light', 'two words': 'Solarized Dark', gone: 'Not Installed', bad: 3 as never };
+		themeConfig.choices = { kai: 'Monokai', random: 'Solarized Light', 'two words': 'Solarized Dark', gone: 'Not Installed', bad: 3 };
 		await run('kai');
 		await run('kai').catch(() => undefined); // Already showing; reads the settings again.
 		for (const problem of [/"random" cannot be a short name/, /"two words" cannot be a short name/, /no installed theme is called "Not Installed"/, /"bad" must name a theme/]) {

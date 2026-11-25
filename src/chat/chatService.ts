@@ -502,7 +502,10 @@ export class ChatService {
 				this.buffer.push(event.message);
 				const max = Math.max(1, this.options.getConfig().maxMessages);
 				while (this.buffer.length > max) {
-					this.forget((this.buffer.shift() as ChatMessage).key);
+					const oldest = this.buffer.shift();
+					if (oldest) {
+						this.forget(oldest.key);
+					}
 				}
 				break;
 			}
