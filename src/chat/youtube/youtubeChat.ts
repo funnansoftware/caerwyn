@@ -1,4 +1,5 @@
 import { backoffMs, sleep } from '../../util/emitter';
+import { asArray, asNumber, asRecord, asString, isOptionalRecord, isRecord } from '../../util/json';
 import { ChatAuth, ChatSink, NotSignedInError, SourceStatus, YouTubeSource } from '../types';
 import { JsonObjectStream } from './jsonStream';
 import { YouTubeChatItem, YouTubeMapContext, mapYouTubeItem } from './youtubeMapper';
@@ -48,13 +49,63 @@ interface ApiErrorBody {
 
 /** Builds an error from `{ error }`, or from the `[{ error }]` form the streaming method uses. */
 export function toApiError(body: unknown, httpStatus: number): YouTubeApiError {
-	const wrapper = (Array.isArray(body) ? body[0] : body) as ApiErrorBody | undefined;
-	const error = wrapper?.error;
+	const error = parseApiError(Array.isArray(body) ? body[0] : body);
 	return new YouTubeApiError(
 		error?.message ?? `HTTP ${httpStatus}`,
 		error?.code ?? httpStatus,
 		error?.errors?.[0]?.reason ?? error?.status ?? 'unknown',
 	);
+}
+
+type ApiError = NonNullable<ApiErrorBody['error']>;
+
+/** The `error` of an API response body, or `undefined` when the body has none. */
+function parseApiError(body: unknown): ApiError | undefined {
+	const error = asRecord(asRecord(body)?.error);
+	if (!error) {
+		return undefined;
+	}
+	return {
+		code: asNumber(error.code),
+		message: asString(error.message),
+		status: asString(error.status),
+		errors: asArray(error.errors).map((item) => ({ reason: asString(asRecord(item)?.reason) })),
+	};
+}
+
+function isYouTubeChatItem(value: unknown): value is YouTubeChatItem {
+	return isRecord(value) && isOptionalRecord(value.snippet);
+}
+
+function parseChatResponse(raw: unknown): ChatResponse {
+	const body = asRecord(raw);
+	return {
+		error: parseApiError(body),
+		items: asArray(body?.items).filter(isYouTubeChatItem),
+		nextPageToken: asString(body?.nextPageToken),
+		pollingIntervalMillis: asNumber(body?.pollingIntervalMillis),
+	};
+}
+
+function parseVideoResponse(raw: unknown): VideoResponse {
+	return {
+		items: asArray(asRecord(raw)?.items).map((item) => {
+			const video = asRecord(item);
+			const snippet = asRecord(video?.snippet);
+			const details = asRecord(video?.liveStreamingDetails);
+			return {
+				snippet: snippet && {
+					channelTitle: asString(snippet.channelTitle),
+					title: asString(snippet.title),
+					liveBroadcastContent: asString(snippet.liveBroadcastContent),
+				},
+				liveStreamingDetails: details && {
+					activeLiveChatId: asString(details.activeLiveChatId),
+					concurrentViewers: details.concurrentViewers,
+				},
+			};
+		}),
+	};
 }
 
 function isRetryable(err: unknown): boolean {
@@ -79,6 +130,29 @@ interface VideoSnippet {
 	title?: string;
 	/** `live`, `upcoming` or `none`. */
 	liveBroadcastContent?: string;
+}
+
+interface Broadcast {
+	/** A broadcast's `id` is the ID of the video it plays as. */
+	id?: string;
+	snippet?: { liveChatId?: string; title?: string; scheduledStartTime?: string };
+}
+
+function parseBroadcasts(raw: unknown): { items: Broadcast[] } {
+	return {
+		items: asArray(asRecord(raw)?.items).map((item) => {
+			const broadcast = asRecord(item);
+			const snippet = asRecord(broadcast?.snippet);
+			return {
+				id: asString(broadcast?.id),
+				snippet: snippet && {
+					liveChatId: asString(snippet.liveChatId),
+					title: asString(snippet.title),
+					scheduledStartTime: asString(snippet.scheduledStartTime),
+				},
+			};
+		}),
+	};
 }
 
 interface VideoResponse {
@@ -197,12 +271,13 @@ export class YouTubeChat {
 		}
 	}
 
-	private async getJson<T>(url: string, signal = this.signal): Promise<T> {
+	/** Fetches `url` and returns its body unchecked: `parse` has to narrow it before use. */
+	private async getJson<T>(url: string, parse: (raw: unknown) => T, signal = this.signal): Promise<T> {
 		const res = await this.options.auth.fetch(url, { signal });
 		if (!res.ok) {
 			throw await failure(res);
 		}
-		return (await res.json()) as T;
+		return parse(await res.json());
 	}
 
 	/** A disposed connection stays quiet, so it cannot overwrite the count of its replacement. */
@@ -235,7 +310,7 @@ export class YouTubeChat {
 		let seenBeforeLive = false;
 		while (!signal.aborted) {
 			try {
-				const data = await this.getJson<VideoResponse>(url, signal);
+				const data = await this.getJson(url, parseVideoResponse, signal);
 				if (signal.aborted) {
 					return;
 				}
@@ -291,8 +366,9 @@ export class YouTubeChat {
 	private async findChat(): Promise<Lookup> {
 		const source = this.options.source;
 		if (source.kind === 'video') {
-			const data = await this.getJson<VideoResponse>(
+			const data = await this.getJson(
 				`${this.apiUrl}/videos?part=snippet&part=liveStreamingDetails&id=${encodeURIComponent(source.videoId)}`,
+				parseVideoResponse,
 			);
 			const video = data.items?.[0];
 			if (!video) {
@@ -320,10 +396,11 @@ export class YouTubeChat {
 	 */
 	private async findBroadcast(status: 'active' | 'upcoming', signal = this.signal): Promise<Found | undefined> {
 		// `broadcastType` defaults to `event`, which leaves out "stream now" broadcasts.
-		const data = await this.getJson<{
-			// A broadcast's `id` is the ID of the video it plays as.
-			items?: { id?: string; snippet?: { liveChatId?: string; title?: string; scheduledStartTime?: string } }[];
-		}>(`${this.apiUrl}/liveBroadcasts?part=snippet&part=status&broadcastStatus=${status}&broadcastType=all&maxResults=50`, signal);
+		const data = await this.getJson(
+			`${this.apiUrl}/liveBroadcasts?part=snippet&part=status&broadcastStatus=${status}&broadcastType=all&maxResults=50`,
+			parseBroadcasts,
+			signal,
+		);
 		const now = Date.now();
 		const distance = (time: string | undefined) => {
 			const ms = Date.parse(time ?? '');
@@ -406,7 +483,7 @@ export class YouTubeChat {
 				return false;
 			}
 			for (const object of parser.push(decoder.decode(value, { stream: true }))) {
-				if (this.handleResponse(object as ChatResponse, context)) {
+				if (this.handleResponse(parseChatResponse(object), context)) {
 					await reader.cancel().catch(() => undefined);
 					return true;
 				}
@@ -415,7 +492,7 @@ export class YouTubeChat {
 	}
 
 	private async pollOnce(context: YouTubeMapContext, signal: AbortSignal): Promise<boolean> {
-		const response = await this.getJson<ChatResponse>(`${this.apiUrl}/liveChat/messages?${this.chatQuery(context)}`, signal);
+		const response = await this.getJson(`${this.apiUrl}/liveChat/messages?${this.chatQuery(context)}`, parseChatResponse, signal);
 		this.status({ state: 'connected' }, context.channelName);
 		return this.handleResponse(response, context);
 	}

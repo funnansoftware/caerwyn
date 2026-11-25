@@ -26,6 +26,7 @@ import { vscodeThemeHost } from './controls/vscodeThemeHost';
 import { CHAT_VIEW_TYPE, ChatPanel } from './panel/chatPanel';
 import { CHAT_SIDEBAR_VIEW_ID, ChatSidebar } from './panel/chatSidebar';
 import { ChatWebview } from './panel/chatWebview';
+import { asArray, asRecord, asString, readJsonObject } from './util/json';
 
 // Reading chat, plus what the user's own channel needs: `channel:read:redemptions` and `bits:read` show what
 // viewers spend, and `moderator:manage:automod` shows the messages AutoMod holds and lets the user allow or deny
@@ -48,16 +49,13 @@ async function identifyYouTube(accessToken: string): Promise<Account> {
 	const res = await fetch('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
 		headers: { Authorization: `Bearer ${accessToken}` },
 	});
-	const body = (await res.json().catch(() => ({}))) as {
-		error?: { message?: string };
-		items?: { id?: string; snippet?: { title?: string } }[];
-	};
+	const body = await readJsonObject(res);
 	if (!res.ok) {
 		// Typically the YouTube Data API is not enabled for the Google Cloud project; Google's message says so.
-		throw new Error(body.error?.message ?? `YouTube API returned HTTP ${res.status}`);
+		throw new Error(asString(asRecord(body.error)?.message) ?? `YouTube API returned HTTP ${res.status}`);
 	}
-	const channel = body.items?.[0];
-	return { id: channel?.id ?? '', label: channel?.snippet?.title ?? 'YouTube account' };
+	const channel = asRecord(asArray(body.items)[0]);
+	return { id: asString(channel?.id) ?? '', label: asString(asRecord(channel?.snippet)?.title) ?? 'YouTube account' };
 }
 
 /** Accepts a channel name, `@name`, `#name` or a twitch.tv URL. */

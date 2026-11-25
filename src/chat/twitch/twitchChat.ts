@@ -1,9 +1,11 @@
 import { WebSocket } from 'ws';
 import { backoffMs } from '../../util/emitter';
 import { Account, ChatAuth, ChatSink, NotSignedInError, SourceStatus, TwitchSource } from '../types';
-import { TwitchChatEvent, mapNotification } from './twitchMapper';
-import { AutomaticRedemptionEvent, BitsUseEvent, SpendMatcher, SpendResult, mapAutomaticRedemption, mapBitsUse } from './twitchSpend';
-import { AutomodEvent, mapAutomodHold, mapAutomodUpdate } from './twitchAutomod';
+import { asArray, asNumber, asRecord, asString, readJsonObject } from '../../util/json';
+import { EventSubMessage, isAutomaticRedemptionEvent, isAutomodEvent, isBitsUseEvent, isTwitchChatEvent, parseEventSubMessage } from './eventSub';
+import { mapNotification } from './twitchMapper';
+import { SpendMatcher, SpendResult, mapAutomaticRedemption, mapBitsUse } from './twitchSpend';
+import { mapAutomodHold, mapAutomodUpdate } from './twitchAutomod';
 import { ModerationError } from '../moderation';
 import { TwitchBadges } from './twitchBadges';
 
@@ -59,15 +61,6 @@ export interface TwitchChatOptions {
 interface Channel {
 	source: TwitchSource;
 	broadcasterId: string;
-}
-
-interface EventSubMessage {
-	metadata?: { message_id?: string; message_type?: string; message_timestamp?: string; subscription_type?: string };
-	payload?: {
-		session?: { id?: string; keepalive_timeout_seconds?: number | null; reconnect_url?: string | null };
-		subscription?: { type?: string; status?: string; condition?: { broadcaster_user_id?: string } };
-		event?: TwitchChatEvent & { target_user_id?: string };
-	};
 }
 
 /** One EventSub connection carrying every Twitch chat source. */
@@ -196,17 +189,16 @@ export class TwitchChat {
 				.map((id) => `user_id=${encodeURIComponent(id)}`)
 				.join('&');
 			const res = await this.options.auth.fetch(`${this.helixUrl}/streams?${query}&first=${STREAMS_PAGE}`);
-			const body = (await res.json().catch(() => ({}))) as {
-				message?: string;
-				data?: { user_id?: unknown; viewer_count?: unknown }[];
-			};
+			const body = await readJsonObject(res);
 			if (!res.ok) {
-				throw new Error(body.message ?? `HTTP ${res.status}`);
+				throw new Error(asString(body.message) ?? `HTTP ${res.status}`);
 			}
-			for (const stream of Array.isArray(body.data) ? body.data : []) {
-				const count = stream?.viewer_count;
-				if (typeof stream?.user_id === 'string' && typeof count === 'number' && Number.isFinite(count) && count >= 0) {
-					live.set(stream.user_id, count);
+			for (const item of asArray(body.data)) {
+				const stream = asRecord(item);
+				const count = asNumber(stream?.viewer_count);
+				const userId = asString(stream?.user_id);
+				if (userId !== undefined && count !== undefined && count >= 0) {
+					live.set(userId, count);
 				}
 			}
 		}
@@ -238,25 +230,28 @@ export class TwitchChat {
 		}
 		const query = [...byLogin.keys()].map((login) => `login=${encodeURIComponent(login)}`).join('&');
 		const res = await this.options.auth.fetch(`${this.helixUrl}/users?${query}`);
-		const body = (await res.json().catch(() => ({}))) as {
-			message?: string;
-			data?: { id: string; login: string; display_name?: string }[];
-		};
+		const body = await readJsonObject(res);
 		if (!res.ok) {
-			throw new Error(`Twitch: ${body.message ?? `HTTP ${res.status}`}`);
+			throw new Error(`Twitch: ${asString(body.message) ?? `HTTP ${res.status}`}`);
 		}
-		for (const user of body.data ?? []) {
-			const source = byLogin.get(user.login);
+		for (const item of asArray(body.data)) {
+			const user = asRecord(item);
+			const id = asString(user?.id);
+			const login = asString(user?.login);
+			if (id === undefined || login === undefined) {
+				continue;
+			}
+			const source = byLogin.get(login);
 			if (!source) {
 				continue;
 			}
-			byLogin.delete(user.login);
-			if (this.channels.has(user.id)) {
+			byLogin.delete(login);
+			if (this.channels.has(id)) {
 				this.status(source.id, { state: 'error', detail: 'This channel is already shown by another source.' });
 				continue;
 			}
-			this.channels.set(user.id, { source, broadcasterId: user.id });
-			this.status(source.id, { state: 'connecting' }, user.display_name || user.login);
+			this.channels.set(id, { source, broadcasterId: id });
+			this.status(source.id, { state: 'connecting' }, asString(user?.display_name) || login);
 		}
 		for (const source of byLogin.values()) {
 			this.status(source.id, { state: 'error', detail: 'Twitch has no channel with this name.' });
@@ -297,10 +292,8 @@ export class TwitchChat {
 	}
 
 	private onMessage(ws: WebSocket, raw: string): void {
-		let message: EventSubMessage;
-		try {
-			message = JSON.parse(raw) as EventSubMessage;
-		} catch {
+		const message = parseEventSubMessage(raw);
+		if (!message) {
 			return;
 		}
 		const type = message.metadata?.message_type;
@@ -442,8 +435,8 @@ export class TwitchChat {
 		if (res.status === 204 || res.ok) {
 			return;
 		}
-		const body = (await res.json().catch(() => ({}))) as { message?: string };
-		this.options.sink.log(`Twitch refused to ${allow ? 'allow' : 'deny'} a held message: HTTP ${res.status} ${body.message ?? ''}`.trim());
+		const body = await readJsonObject(res);
+		this.options.sink.log(`Twitch refused to ${allow ? 'allow' : 'deny'} a held message: HTTP ${res.status} ${asString(body.message) ?? ''}`.trim());
 		switch (res.status) {
 			case 400:
 				throw new ModerationError('That message was already allowed or denied, or its hold has expired.');
@@ -484,14 +477,12 @@ export class TwitchChat {
 			}
 			throw new Error(`Could not reach Twitch: ${errorText(err)}`);
 		}
-		const reply = (await res.json().catch(() => ({}))) as {
-			message?: string;
-			data?: { is_sent?: boolean; drop_reason?: { code?: string; message?: string } | null }[];
-		};
+		const reply = await readJsonObject(res);
+		const replyMessage = asString(reply.message);
 		if (!res.ok) {
 			switch (res.status) {
 				case 401:
-					throw new Error(`Twitch refused the message (${reply.message ?? 'not authorised'}). Sign in to Twitch again.`);
+					throw new Error(`Twitch refused the message (${replyMessage ?? 'not authorised'}). Sign in to Twitch again.`);
 				case 403:
 					throw new Error('Twitch does not let this account chat in that channel.');
 				case 422:
@@ -499,13 +490,13 @@ export class TwitchChat {
 				case 429:
 					throw new Error('Twitch says too many messages were sent; try again shortly.');
 				default:
-					throw new Error(`Twitch: ${reply.message ?? `HTTP ${res.status}`}`);
+					throw new Error(`Twitch: ${replyMessage ?? `HTTP ${res.status}`}`);
 			}
 		}
-		const result = reply.data?.[0];
+		const result = asRecord(asArray(reply.data)[0]);
 		if (result?.is_sent !== true) {
-			const reason = result?.drop_reason;
-			throw new Error(`Twitch did not send the message: ${reason?.message ?? reason?.code ?? 'no reason given'}`);
+			const reason = asRecord(result?.drop_reason);
+			throw new Error(`Twitch did not send the message: ${asString(reason?.message) ?? asString(reason?.code) ?? 'no reason given'}`);
 		}
 	}
 
@@ -525,8 +516,8 @@ export class TwitchChat {
 		if (res.status === 202 || res.status === 409) {
 			return undefined;
 		}
-		const body = (await res.json().catch(() => ({}))) as { message?: string };
-		const message = body.message ?? `HTTP ${res.status}`;
+		const body = await readJsonObject(res);
+		const message = asString(body.message) ?? `HTTP ${res.status}`;
 		if (res.status === 401) {
 			// The token was already refreshed once for this request, so only signing in again can help.
 			throw new NotSignedInError(`Twitch rejected the session: ${message}`);
@@ -561,41 +552,54 @@ export class TwitchChat {
 		const timestamp = Date.parse(message.metadata?.message_timestamp ?? '') || Date.now();
 		switch (message.metadata?.subscription_type) {
 			case 'channel.chat.message':
-				sink.event({ type: 'message', message: this.spending.message(event, channel.source.id, timestamp) });
+				if (isTwitchChatEvent(event)) {
+					sink.event({ type: 'message', message: this.spending.message(event, channel.source.id, timestamp) });
+				}
 				break;
-			case 'channel.channel_points_automatic_reward_redemption.add': {
-				const redemption = event as unknown as AutomaticRedemptionEvent;
-				this.spend(mapAutomaticRedemption(redemption, channel.source.id, timestamp, id ?? String(timestamp)));
+			case 'channel.channel_points_automatic_reward_redemption.add':
+				if (isAutomaticRedemptionEvent(event)) {
+					this.spend(mapAutomaticRedemption(event, channel.source.id, timestamp, id ?? String(timestamp)));
+				}
 				break;
-			}
 			case 'channel.bits.use':
-				this.spend(mapBitsUse(event as unknown as BitsUseEvent, channel.source.id, timestamp, id ?? String(timestamp)));
+				if (isBitsUseEvent(event)) {
+					this.spend(mapBitsUse(event, channel.source.id, timestamp, id ?? String(timestamp)));
+				}
 				break;
 			case 'automod.message.hold': {
-				const held = mapAutomodHold(event as unknown as AutomodEvent, channel.source.id, timestamp);
+				const held = isAutomodEvent(event) ? mapAutomodHold(event, channel.source.id, timestamp) : undefined;
 				if (held) {
 					sink.event({ type: 'message', message: held });
 				}
 				break;
 			}
 			case 'automod.message.update': {
-				const held = mapAutomodUpdate(event as unknown as AutomodEvent, channel.source.id, timestamp);
+				const held = isAutomodEvent(event) ? mapAutomodUpdate(event, channel.source.id, timestamp) : undefined;
 				if (held) {
 					sink.event({ type: 'update', message: held });
 				}
 				break;
 			}
 			case 'channel.chat.notification':
-				sink.event({ type: 'message', message: mapNotification(event, channel.source.id, timestamp, this.badges) });
-				break;
-			case 'channel.chat.message_delete':
-				sink.event({ type: 'delete', key: `twitch:${event.message_id}` });
-				break;
-			case 'channel.chat.clear_user_messages':
-				if (event.target_user_id) {
-					sink.event({ type: 'purge', platform: 'twitch', channelId: channel.broadcasterId, userId: event.target_user_id });
+				if (isTwitchChatEvent(event)) {
+					sink.event({ type: 'message', message: mapNotification(event, channel.source.id, timestamp, this.badges) });
 				}
 				break;
+			case 'channel.chat.message_delete':
+				{
+					const messageId = asString(event.message_id);
+					if (messageId) {
+						sink.event({ type: 'delete', key: `twitch:${messageId}` });
+					}
+				}
+				break;
+			case 'channel.chat.clear_user_messages': {
+				const userId = asString(event.target_user_id);
+				if (userId) {
+					sink.event({ type: 'purge', platform: 'twitch', channelId: channel.broadcasterId, userId });
+				}
+				break;
+			}
 			case 'channel.chat.clear':
 				sink.event({ type: 'clear', platform: 'twitch', channelId: channel.broadcasterId });
 				break;

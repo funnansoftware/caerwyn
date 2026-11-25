@@ -1,5 +1,6 @@
 import { Account, ChatAuth, NotSignedInError } from '../chat/types';
 import { Emitter } from '../util/emitter';
+import { asArray, asNumber, asRecord, asString, parseJson } from '../util/json';
 import { AppCredentials, FetchLike, OAuthClient, OAuthError, TokenSet } from './oauth';
 
 /** The subset of `vscode.SecretStorage` this needs. */
@@ -56,7 +57,7 @@ export class AuthSession implements ChatAuth {
 
 	/** The permissions the current sign-in was granted, or `undefined` when signed out. */
 	async grantedScopes(): Promise<string[] | undefined> {
-		return (await this.read<StoredSession>('session'))?.tokens.scopes;
+		return (await this.readSession())?.tokens.scopes;
 	}
 
 	get oauth(): OAuthClient {
@@ -64,7 +65,7 @@ export class AuthSession implements ChatAuth {
 	}
 
 	async getCredentials(): Promise<AppCredentials | undefined> {
-		return this.read<AppCredentials>('app');
+		return this.readCredentials();
 	}
 
 	async setCredentials(creds: AppCredentials): Promise<void> {
@@ -72,7 +73,7 @@ export class AuthSession implements ChatAuth {
 	}
 
 	async getAccount(): Promise<Account | undefined> {
-		return (await this.read<StoredSession>('session'))?.account;
+		return (await this.readSession())?.account;
 	}
 
 	/** Stores freshly issued tokens after working out whose they are. */
@@ -85,7 +86,7 @@ export class AuthSession implements ChatAuth {
 	}
 
 	async signOut(forgetApp = false): Promise<void> {
-		const stored = await this.read<StoredSession>('session');
+		const stored = await this.readSession();
 		const creds = await this.getCredentials();
 		if (stored && creds) {
 			try {
@@ -102,7 +103,7 @@ export class AuthSession implements ChatAuth {
 	}
 
 	async getAccessToken(): Promise<string> {
-		const stored = await this.read<StoredSession>('session');
+		const stored = await this.readSession();
 		if (!stored) {
 			throw new NotSignedInError();
 		}
@@ -148,7 +149,7 @@ export class AuthSession implements ChatAuth {
 
 	private async doRefresh(staleToken: string): Promise<string> {
 		// Read storage again: another VS Code window may already have refreshed and rotated the tokens.
-		const stored = await this.read<StoredSession>('session');
+		const stored = await this.readSession();
 		if (!stored) {
 			throw new NotSignedInError();
 		}
@@ -166,7 +167,7 @@ export class AuthSession implements ChatAuth {
 			if (!(err instanceof OAuthError) || err.kind !== 'invalid_grant') {
 				throw err;
 			}
-			const latest = await this.read<StoredSession>('session');
+			const latest = await this.readSession();
 			if (latest && latest.tokens.refreshToken !== stored.tokens.refreshToken) {
 				return latest.tokens.accessToken;
 			}
@@ -204,16 +205,41 @@ export class AuthSession implements ChatAuth {
 		return `${this.options.storageKey}.${name}`;
 	}
 
-	private async read<T>(name: string): Promise<T | undefined> {
+	private async readStored(name: string): Promise<unknown> {
 		const raw = await this.options.secrets.get(this.key(name));
-		if (!raw) {
+		return raw ? parseJson(raw) : undefined;
+	}
+
+	private async readCredentials(): Promise<AppCredentials | undefined> {
+		const stored = asRecord(await this.readStored('app'));
+		const clientId = asString(stored?.clientId);
+		if (clientId === undefined) {
 			return undefined;
 		}
-		try {
-			return JSON.parse(raw) as T;
-		} catch {
+		return { clientId, clientSecret: asString(stored?.clientSecret) };
+	}
+
+	/** The saved session, or `undefined` when there is none or what is saved is unusable. */
+	private async readSession(): Promise<StoredSession | undefined> {
+		const stored = asRecord(await this.readStored('session'));
+		const tokens = asRecord(stored?.tokens);
+		const account = asRecord(stored?.account);
+		const accessToken = asString(tokens?.accessToken);
+		const expiresAt = asNumber(tokens?.expiresAt);
+		const id = asString(account?.id);
+		const label = asString(account?.label);
+		if (accessToken === undefined || expiresAt === undefined || id === undefined || label === undefined) {
 			return undefined;
 		}
+		return {
+			tokens: {
+				accessToken,
+				refreshToken: asString(tokens?.refreshToken),
+				expiresAt,
+				scopes: asArray(tokens?.scopes).filter((scope): scope is string => typeof scope === 'string'),
+			},
+			account: { id, label },
+		};
 	}
 
 	private async write(session: StoredSession): Promise<void> {

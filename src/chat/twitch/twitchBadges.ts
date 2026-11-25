@@ -1,3 +1,4 @@
+import { asString, readJsonObject } from '../../util/json';
 import { ChatAuth } from '../types';
 
 // Twitch chat badge pictures: the global set every channel shares, and each channel's own (subscriber, Bits).
@@ -91,9 +92,9 @@ export class TwitchBadges implements BadgeLookup {
 	private async fetch(path: string): Promise<Catalog | undefined> {
 		try {
 			const res = await this.auth.fetch(`${this.helixUrl}${path}`);
-			const body = (await res.json().catch(() => ({}))) as { message?: string; data?: unknown };
+			const body = await readJsonObject(res);
 			if (!res.ok) {
-				this.log(`Twitch: could not load chat badges (${body.message ?? `HTTP ${res.status}`}).`);
+				this.log(`Twitch: could not load chat badges (${asString(body.message) ?? `HTTP ${res.status}`}).`);
 				return undefined;
 			}
 			return parseBadgeSets(body.data);

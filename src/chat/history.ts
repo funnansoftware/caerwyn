@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { promises as fs, appendFileSync, mkdirSync } from 'fs';
 import * as path from 'path';
+import { asRecord, isRecord, parseJson } from '../util/json';
 import { ChatEvent, ChatMessage, HistoryEntry, HistoryPage, HistoryQuery, Platform } from './types';
 
 export type { HistoryEntry, HistoryPage, HistoryQuery };
@@ -37,16 +38,30 @@ export function historyRoom(platform: Platform, sourceId: string, channelId: str
 	return platform === 'twitch' ? channelId : sourceId;
 }
 
+/** Checks a saved message has what reading history relies on, since the file may be damaged or from an older version. */
+function isStoredMessage(value: unknown): value is ChatMessage {
+	return (
+		isRecord(value) &&
+		typeof value.key === 'string' &&
+		(value.platform === 'twitch' || value.platform === 'youtube') &&
+		typeof value.channelId === 'string' &&
+		typeof value.timestamp === 'number' &&
+		isRecord(value.author) &&
+		typeof value.author.id === 'string' &&
+		Array.isArray(value.fragments)
+	);
+}
+
 function isId(value: unknown): value is string {
 	return typeof value === 'string' && value.length > 0 && value.length <= ID_MAX;
 }
 
 /** Checks a request from the webview, which is untrusted. */
 export function parseHistoryQuery(raw: unknown): HistoryQuery | undefined {
-	if (typeof raw !== 'object' || raw === null) {
+	if (!isRecord(raw)) {
 		return undefined;
 	}
-	const value = raw as Record<string, unknown>;
+	const value = raw;
 	if (value.platform !== 'twitch' && value.platform !== 'youtube') {
 		return undefined;
 	}
@@ -239,15 +254,13 @@ export class ChatHistory {
 			if (!raw) {
 				continue;
 			}
-			let line: Line;
-			try {
-				line = JSON.parse(raw) as Line;
-			} catch {
-				continue; // A line cut short by a crash.
+			const line = asRecord(parseJson(raw)); // Not an object when a crash cut the line short.
+			if (!line) {
+				continue;
 			}
-			if ('m' in line && line.m && typeof line.m.key === 'string' && belongs(line.m)) {
+			if (isStoredMessage(line.m) && belongs(line.m)) {
 				messages.set(line.m.key, line.m);
-			} else if ('d' in line && typeof line.d === 'string') {
+			} else if (typeof line.d === 'string') {
 				deleted.add(line.d);
 			}
 		}
